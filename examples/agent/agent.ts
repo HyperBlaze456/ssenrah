@@ -1,8 +1,28 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { AgentConfig, Message, ToolDefinition, TurnResult } from "./types";
+import {
+  LLMProvider,
+  ChatContentBlock,
+  ChatResponse,
+} from "../providers/types";
+import {
+  AgentConfig,
+  Message,
+  RunOptions,
+  ToolDefinition,
+  TurnResult,
+} from "./types";
 import { defaultTools } from "./tools";
+import {
+  parseIntents,
+  validateIntents,
+  getIntentSystemPrompt,
+  IntentDeclaration,
+} from "../harness/intent";
+import { FallbackAgent } from "../harness/fallback";
+import { Beholder, BeholderVerdict } from "../harness/beholder";
+import { EventLogger } from "../harness/events";
+import os from "os";
+import path from "path";
 
-const DEFAULT_MODEL = "claude-opus-4-6";
 const DEFAULT_MAX_TOKENS = 4096;
 const DEFAULT_MAX_TURNS = 20;
 const DEFAULT_SYSTEM = `You are a helpful AI agent. You have access to tools that let you
@@ -14,30 +34,65 @@ use tools when needed, and produce clear results.`;
  *
  * Architecture follows https://ampcode.com/notes/how-to-build-an-agent:
  *   1. Accept user message
- *   2. Send full conversation history to Claude
- *   3. Claude responds with text and/or tool_use blocks
+ *   2. Send full conversation history to the LLM provider
+ *   3. Provider responds with text and/or tool calls
  *   4. Execute every requested tool
- *   5. Append tool_result messages and loop
- *   6. Stop when Claude returns a pure text response (no tool calls)
+ *   5. Append tool results and loop
+ *   6. Stop when provider returns a pure text response (no tool calls)
+ *
+ * Now provider-agnostic — works with Anthropic, Gemini, OpenAI, or any LLMProvider.
  */
 export class Agent {
-  private client: Anthropic;
+  private provider: LLMProvider;
   private model: string;
   private maxTokens: number;
   private maxTurns: number;
   private systemPrompt: string;
   private tools: ToolDefinition[];
   private signal?: AbortSignal;
+  private intentRequired: boolean;
+  private fallbackAgent?: FallbackAgent;
+  private beholder?: Beholder;
+  private eventLogger: EventLogger;
   private history: Message[] = [];
 
-  constructor(config: AgentConfig = {}) {
-    this.client = new Anthropic();
-    this.model = config.model ?? DEFAULT_MODEL;
+  constructor(config: AgentConfig) {
+    this.provider = config.provider;
+    this.model = config.model;
     this.maxTokens = config.maxTokens ?? DEFAULT_MAX_TOKENS;
     this.maxTurns = config.maxTurns ?? DEFAULT_MAX_TURNS;
-    this.systemPrompt = config.systemPrompt ?? DEFAULT_SYSTEM;
     this.tools = config.tools ?? defaultTools;
     this.signal = config.signal;
+    this.intentRequired = config.intentRequired ?? true;
+    this.eventLogger = new EventLogger({
+      filePath: config.eventLogPath ?? defaultEventLogPath(config.sessionId),
+    });
+
+    // Build system prompt — append intent instructions if required
+    let system = config.systemPrompt ?? DEFAULT_SYSTEM;
+    if (this.intentRequired) {
+      system += "\n\n" + getIntentSystemPrompt();
+    }
+    this.systemPrompt = system;
+
+    // Set up fallback agent if a fallback provider is configured
+    if (config.fallbackProvider) {
+      this.fallbackAgent = new FallbackAgent({
+        provider: config.fallbackProvider,
+        model: config.fallbackModel ?? config.model,
+        maxRetries: 3,
+      });
+    }
+  }
+
+  /** Attach a Beholder overseer to monitor this agent. */
+  setBeholder(beholder: Beholder): void {
+    this.beholder = beholder;
+  }
+
+  /** Get the event logger for this agent. */
+  getEventLogger(): EventLogger {
+    return this.eventLogger;
   }
 
   /** Expose the conversation history (read-only snapshot). */
@@ -53,16 +108,17 @@ export class Agent {
   /**
    * Run one user turn through the agent loop.
    *
-   * The loop continues calling Claude and executing tools until:
-   *   - Claude returns end_turn with no tool_use blocks, OR
+   * The loop continues calling the provider and executing tools until:
+   *   - Provider returns end_turn with no tool calls, OR
    *   - maxTurns is reached (safety guard against runaway loops)
    */
-  async run(userMessage: string): Promise<TurnResult> {
+  async run(userMessage: string, options?: RunOptions): Promise<TurnResult> {
     this.history.push({ role: "user", content: userMessage });
 
     const toolsUsed: string[] = [];
     let finalResponse = "";
     let turns = 0;
+    const totalUsage = { inputTokens: 0, outputTokens: 0 };
 
     while (turns < this.maxTurns) {
       // Check for external cancellation before each API call
@@ -70,111 +126,276 @@ export class Agent {
         return {
           response: finalResponse || "(agent cancelled)",
           toolsUsed,
+          usage: totalUsage,
           done: false,
         };
       }
 
       turns++;
 
-      const response = await this.client.messages.create(
-        {
-          model: this.model,
-          max_tokens: this.maxTokens,
-          system: this.systemPrompt,
-          tools: this.tools.map((t) => ({
-            name: t.name,
-            description: t.description,
-            input_schema: t.inputSchema,
-          })),
-          messages: this.history,
-        },
-        // Pass AbortSignal to the SDK so in-flight HTTP is cancelled too
-        { signal: this.signal }
-      );
+      const toolSchemas = this.tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      }));
 
-      // Collect text and tool_use blocks
-      const textBlocks = response.content.filter(
-        (b): b is Anthropic.TextBlock => b.type === "text"
-      );
-      const toolUseBlocks = response.content.filter(
-        (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
-      );
+      let streamedByProvider = false;
+      const request = {
+        model: this.model,
+        systemPrompt: this.systemPrompt,
+        messages: [...this.history],
+        tools: toolSchemas,
+        maxTokens: this.maxTokens,
+        signal: this.signal,
+      };
+      const response: ChatResponse =
+        options?.stream && this.provider.chatStream
+          ? await this.provider.chatStream(request, {
+              onTextDelta: (delta) => {
+                streamedByProvider = true;
+                options?.onTextDelta?.(delta);
+              },
+            })
+          : await this.provider.chat(request);
 
-      // Append assistant turn to history (stateless server pattern)
-      this.history.push({ role: "assistant", content: response.content });
-
-      if (textBlocks.length > 0) {
-        finalResponse = textBlocks.map((b) => b.text).join("\n");
+      if (
+        options?.stream &&
+        !streamedByProvider &&
+        response.textBlocks.length > 0
+      ) {
+        for (const block of response.textBlocks) {
+          options.onTextDelta?.(block);
+        }
+      }
+      if (response.usage) {
+        totalUsage.inputTokens += response.usage.inputTokens;
+        totalUsage.outputTokens += response.usage.outputTokens;
       }
 
-      // Handle non-terminal stop reasons explicitly
-      if (response.stop_reason === "max_tokens") {
+      // Build assistant message from response
+      const assistantBlocks: ChatContentBlock[] = [];
+
+      for (const text of response.textBlocks) {
+        assistantBlocks.push({ type: "text", text });
+      }
+      for (const tc of response.toolCalls) {
+        assistantBlocks.push({
+          type: "tool_use",
+          id: tc.id,
+          name: tc.name,
+          input: tc.input,
+        });
+      }
+
+      this.history.push({ role: "assistant", content: assistantBlocks });
+
+      if (response.textBlocks.length > 0) {
+        finalResponse = response.textBlocks.join("\n");
+      }
+
+      // Handle non-terminal stop reasons
+      if (response.stopReason === "max_tokens") {
         return {
           response: finalResponse || "(response truncated by max_tokens)",
           toolsUsed,
+          usage: totalUsage,
           done: false,
         };
       }
 
-      // tool_use: keep looping (handled below)
-      // end_turn with no tool blocks: done
-      // Any other unexpected stop reason: treat as done but surface response
-      if (toolUseBlocks.length === 0) {
+      // No tool calls → done
+      if (response.toolCalls.length === 0) {
         break;
       }
 
+      // Parse intents from text if intent gate is enabled
+      let intents: IntentDeclaration[] = [];
+      if (this.intentRequired) {
+        const fullText = response.textBlocks.join("\n");
+        intents = parseIntents(fullText);
+
+        const validation = validateIntents(intents, response.toolCalls);
+        if (!validation.valid) {
+          // Block unmatched tool calls — return error to agent
+          const unmatchedNames = validation.unmatched
+            .map((tc) => tc.name)
+            .join(", ");
+          const errorBlocks: ChatContentBlock[] = validation.unmatched.map(
+            (tc) => ({
+              type: "tool_result" as const,
+              toolUseId: tc.id,
+              content: `Error: tool call "${tc.name}" blocked — no intent declaration found. You must declare intent before using tools.`,
+              isError: true,
+            })
+          );
+          this.history.push({ role: "user", content: errorBlocks });
+
+          this.eventLogger.log({
+            timestamp: new Date().toISOString(),
+            type: "error",
+            agentId: "agent",
+            data: { reason: "intent_gate_blocked", unmatchedTools: unmatchedNames },
+          });
+          continue;
+        }
+
+        // Log intents
+        for (const intent of intents) {
+          this.eventLogger.log({
+            timestamp: new Date().toISOString(),
+            type: "intent",
+            agentId: "agent",
+            data: intent as unknown as Record<string, unknown>,
+          });
+        }
+      }
+
       // Execute each tool call and collect results
-      const toolResults: Anthropic.ToolResultBlockParam[] = [];
-      for (const block of toolUseBlocks) {
-        // Check abort before each tool so we stop mid-batch on cancellation
+      const toolResultBlocks: ChatContentBlock[] = [];
+      for (const tc of response.toolCalls) {
+        // Check abort before each tool
         if (this.signal?.aborted) {
           return {
             response: finalResponse || "(agent cancelled during tool execution)",
             toolsUsed,
+            usage: totalUsage,
             done: false,
           };
         }
 
-        toolsUsed.push(block.name);
+        // Beholder check
+        if (this.beholder) {
+          const intent = intents.find((i) => i.toolName === tc.name) ?? {
+            toolName: tc.name,
+            purpose: "unknown",
+            expectedOutcome: "unknown",
+            riskLevel: "read" as const,
+            timestamp: new Date().toISOString(),
+          };
 
-        const tool = this.tools.find((t) => t.name === block.name);
+          const verdict: BeholderVerdict = await this.beholder.evaluate(
+            intent,
+            tc,
+            response.usage
+          );
+
+          this.eventLogger.log({
+            timestamp: new Date().toISOString(),
+            type: "beholder_action",
+            agentId: "agent",
+            data: { action: verdict.action, reason: verdict.reason },
+          });
+
+          if (verdict.action === "kill") {
+            return {
+              response: `(agent killed by Beholder: ${verdict.reason})`,
+              toolsUsed,
+              usage: totalUsage,
+              done: false,
+            };
+          }
+          // "pause" and "warn" are logged but don't stop execution in autonomous mode
+        }
+
+        toolsUsed.push(tc.name);
+
+        this.eventLogger.log({
+          timestamp: new Date().toISOString(),
+          type: "tool_call",
+          agentId: "agent",
+          data: { tool: tc.name, input: tc.input },
+        });
+
+        const tool = this.tools.find((t) => t.name === tc.name);
         let content: string;
         let isError = false;
 
         if (!tool) {
-          content = `Unknown tool: "${block.name}"`;
+          content = `Unknown tool: "${tc.name}"`;
           isError = true;
         } else {
           try {
-            content = await tool.run(block.input as Record<string, unknown>);
-            // Tools return error strings prefixed with "Error:"
+            content = await tool.run(tc.input);
             if (content.startsWith("Error")) isError = true;
           } catch (err) {
-            content = `Tool "${block.name}" threw: ${(err as Error).message}`;
+            content = `Tool "${tc.name}" threw: ${(err as Error).message}`;
             isError = true;
           }
         }
 
-        toolResults.push({
+        // If tool failed and we have a fallback agent, try recovery
+        if (isError && this.fallbackAgent && tool) {
+          const intent = intents.find((i) => i.toolName === tc.name) ?? {
+            toolName: tc.name,
+            purpose: "execute tool",
+            expectedOutcome: "success",
+            riskLevel: "read" as const,
+            timestamp: new Date().toISOString(),
+          };
+
+          this.eventLogger.log({
+            timestamp: new Date().toISOString(),
+            type: "fallback",
+            agentId: "agent",
+            data: { tool: tc.name, originalError: content },
+          });
+
+          const fallbackResult = await this.fallbackAgent.handleFailure(
+            tc,
+            content,
+            intent,
+            this.tools
+          );
+
+          if (fallbackResult.resolved && fallbackResult.result) {
+            content = fallbackResult.result;
+            isError = false;
+          }
+        }
+
+        this.eventLogger.log({
+          timestamp: new Date().toISOString(),
           type: "tool_result",
-          tool_use_id: block.id,
+          agentId: "agent",
+          data: { tool: tc.name, isError, contentLength: content.length },
+        });
+
+        toolResultBlocks.push({
+          type: "tool_result",
+          toolUseId: tc.id,
+          name: tc.name,
           content,
-          is_error: isError,
+          isError,
         });
       }
 
-      // Feed tool results back as a user message (stateless server pattern)
-      this.history.push({ role: "user", content: toolResults });
+      // Feed tool results back as a user message
+      this.history.push({ role: "user", content: toolResultBlocks });
     }
 
     if (turns >= this.maxTurns) {
       return {
         response: finalResponse || "(agent stopped: max turns reached)",
         toolsUsed,
+        usage: totalUsage,
         done: false,
       };
     }
 
-    return { response: finalResponse, toolsUsed, done: true };
+    return { response: finalResponse, toolsUsed, usage: totalUsage, done: true };
   }
+}
+
+function defaultEventLogPath(sessionId?: string): string {
+  const safeSessionId =
+    sessionId && sessionId.trim() !== ""
+      ? sessionId.trim()
+      : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return path.join(
+    os.homedir(),
+    ".ssenrah",
+    "sessions",
+    safeSessionId,
+    "events.jsonl"
+  );
 }

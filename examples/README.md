@@ -1,77 +1,71 @@
-# Example: TypeScript Agent Harness
+# Example: Provider-Agnostic TypeScript Harness
 
-This example implements the agent harness in TypeScript using the Anthropic SDK.
-Architecture follows [How to Build an Agent](https://ampcode.com/notes/how-to-build-an-agent).
+This folder contains the hackathon harness reference implementation.
 
-## Project Structure
+## What’s included
 
-```
-agent/
-  agent.ts        — Core agent loop (LLM + tool execution)
-  tools.ts        — Filesystem tools: read_file, list_files, edit_file
-  types.ts        — Shared TypeScript types
-  index.ts        — Barrel export
-teams/
-  orchestrator.ts — Breaks goals into tasks, synthesizes results
-  worker.ts       — Executes a single assigned task autonomously
-  team.ts         — Coordinates orchestrator + worker pool
-  types.ts        — Team-specific types
-  index.ts        — Barrel export
-agent-cli.ts      — Interactive REPL for the agent
-index.ts          — Demo: single agent + team workflow
-```
+- **Provider adapters** (`providers/`)
+  - Anthropic (`@anthropic-ai/sdk`)
+  - Gemini (`@google/genai`, including vision content blocks)
+  - OpenAI-compatible (`fetch`, configurable `baseUrl`)
+- **Core agent loop** (`agent/`)
+  - Provider-agnostic chat + tool loop
+  - Intent gate (tool calls must declare intent)
+  - Tool fallback agent on failures
+  - Event logging to `~/.ssenrah/sessions/<id>/events.jsonl`
+- **Harness safety primitives** (`harness/`)
+  - `intent.ts` — parse/validate intent declarations
+  - `beholder.ts` — drift/loop/rate/budget oversight
+  - `fallback.ts` — constrained retry planner
+  - `events.ts` — JSONL logger
+- **Vision QA showcase** (`tools/vision-qa.ts`, `skills/vision-qa-agent.ts`)
+- **Team mode** (`teams/`)
+  - Orchestrator + worker pool
+  - Dependency-aware task graph scheduling (`blockedBy`, `priority`)
+  - In-memory mailbox for orchestrator/worker coordination
+  - Optional shared Beholder monitoring workers
+  - Worker restart attempts on kill/timeout
 
-## Setup
+## Scripts
 
 ```bash
 cd examples
 npm install
-export ANTHROPIC_API_KEY=your_key_here
-```
 
-## Running
-
-```bash
-# Interactive agent REPL
-npm run agent
-
-# Demo: single agent + team
-npm run dev
-
-# Build TypeScript
+# Build
 npm run build
 
-# Run tests
+# Tests
 npm test
+
+# Interactive agent CLI
+npm run agent -- --provider gemini --model gemini-2.0-flash --overseer
+# Streamed TUI mode (default on, disable with --no-stream)
+npm run agent -- --provider openai --model gpt-4o --stream
+# Disable split-pane live layout if needed
+npm run agent -- --no-layout
+# Reset persisted CLI preferences
+npm run agent -- --reset-prefs
+# In-session commands
+# /help  /stream on|off  /layout on|off  /panels on|off  /pane ...  /prefs ...  /clear  /exit
+# Keyboard shortcuts: Ctrl+L clear, Ctrl+G stream, Ctrl+O layout, Ctrl+B panels
+
+# Harness demo
+npm run demo:harness
+
+# Vision QA demo
+npm run demo:vision-qa -- ./path/to/screenshot.png "optional context"
 ```
 
-## Architecture
+## Environment variables
 
-### Single Agent (`agent/agent.ts`)
+- `ANTHROPIC_API_KEY`
+- `GEMINI_API_KEY` (or `GOOGLE_API_KEY`)
+- `OPENAI_API_KEY`
+- `OPENAI_BASE_URL` (optional, for OpenAI-compatible endpoints like OpenRouter)
+- `OPENROUTER_BASE_URL` (optional alias for OpenRouter)
 
-The `Agent` class implements the conversational loop:
-
-```
-user message → Claude API → text | tool_use blocks
-                                      ↓
-                              execute tools
-                                      ↓
-                          tool_result → Claude API → ...
-                                      ↓
-                              end_turn (text only)
-```
-
-### Agent Teams (`teams/`)
-
-```
-Team.run(goal)
-  → OrchestratorAgent.plan(goal)   — Claude decomposes goal → tasks[]
-  → WorkerAgent.execute(task)      — parallel, each runs its own Agent loop
-  → OrchestratorAgent.summarize()  — synthesizes all results
-```
-
-The team pattern maps to the harness philosophy:
-- Orchestrator spawns the right number of workers
-- Workers run independently and report status
-- Failed workers are recorded but don't block the team
-- Orchestrator synthesizes a coherent final result
+Optional demo overrides:
+- `SSENRAH_PROVIDER=anthropic|gemini|openai`
+- `SSENRAH_MODEL=<model-id>`
+- `SSENRAH_FALLBACK_MODEL=<model-id>`

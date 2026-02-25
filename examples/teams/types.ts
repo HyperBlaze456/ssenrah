@@ -1,3 +1,6 @@
+import { LLMProvider } from "../providers/types";
+import { Beholder } from "../harness/beholder";
+
 /**
  * A task assigned to a worker agent in the team.
  */
@@ -5,6 +8,9 @@ export interface TeamTask {
   id: string;
   description: string;
   assignedTo?: string;
+  blockedBy?: string[];
+  priority?: number;
+  metadata?: Record<string, unknown>;
   status: "pending" | "in_progress" | "done" | "failed";
   result?: string;
   error?: string;
@@ -16,19 +22,35 @@ export interface TeamTask {
  * A message passed between agents in the team.
  */
 export interface TeamMessage {
+  id: string;
   from: string;
   to: string;
   content: string;
+  taskId?: string;
+  metadata?: Record<string, unknown>;
   timestamp: Date;
+  delivered?: boolean;
+  deliveredAt?: Date;
 }
 
 /**
  * Configuration for a team of agents.
+ * Now provider-agnostic — accepts LLMProvider instances.
  */
 export interface TeamConfig {
   name: string;
+  /** Provider for the orchestrator (cheap model recommended). */
+  orchestratorProvider?: LLMProvider;
+  /** Model for the orchestrator. */
   orchestratorModel?: string;
+  /** Provider for workers (capable model recommended). */
+  workerProvider?: LLMProvider;
+  /** Model for workers. */
   workerModel?: string;
+  /** Optional shared Beholder to monitor all workers. */
+  beholder?: Beholder;
+  /** Number of restart attempts when a worker is killed or times out. */
+  workerRestartLimit?: number;
   maxWorkers?: number;
   verbose?: boolean;
 }
@@ -40,4 +62,5 @@ export interface TeamResult {
   tasks: TeamTask[];
   summary: string;
   success: boolean;
+  messages?: TeamMessage[];
 }

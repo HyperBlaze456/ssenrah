@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { LLMProvider, ChatResponse } from "../providers/types";
 import { TeamTask } from "./types";
 
 const MAX_TASKS = 5;
@@ -7,53 +7,48 @@ const ORCHESTRATOR_SYSTEM = `You are an orchestrator agent that breaks complex g
 Given a high-level goal, produce a JSON array of tasks. Each task must have:
   - id: a short unique identifier (e.g. "t1", "t2")
   - description: a self-contained task description a worker agent can act on independently
+Optional fields:
+  - blockedBy: array of prerequisite task ids this task depends on
+  - priority: higher numbers run first when multiple tasks are ready
 
 Rules:
 - Limit to at most ${MAX_TASKS} tasks
-- Each task must be independently executable (no inter-task dependencies)
+- Prefer independent tasks. Only use blockedBy when ordering constraints are truly needed
 - Be specific: include file paths, expected content, or exact operations
 - Return ONLY the JSON array, no prose, no markdown fences`;
 
 /**
  * OrchestratorAgent — decomposes a goal into a list of TeamTasks.
  *
- * This models the orchestrator in the agent teams pattern:
- * - Receives high-level goal
- * - Plans and decomposes into atomic tasks
- * - Delegates to WorkerAgents
- * - Synthesizes results into a final summary
+ * Now provider-agnostic — works with any LLMProvider.
  */
 export class OrchestratorAgent {
-  private client: Anthropic;
+  private provider: LLMProvider;
   private model: string;
   private verbose: boolean;
 
-  constructor(model = "claude-haiku-4-5-20251001", verbose = false) {
-    this.client = new Anthropic();
+  constructor(provider: LLMProvider, model: string, verbose = false) {
+    this.provider = provider;
     this.model = model;
     this.verbose = verbose;
   }
 
   /**
    * Decompose a high-level goal into worker tasks.
-   * Validates the parsed JSON before returning.
    */
   async plan(goal: string): Promise<TeamTask[]> {
     if (this.verbose) {
       console.log(`[Orchestrator] Planning goal: ${goal}`);
     }
 
-    const response = await this.client.messages.create({
+    const response: ChatResponse = await this.provider.chat({
       model: this.model,
-      max_tokens: 1024,
-      system: ORCHESTRATOR_SYSTEM,
+      systemPrompt: ORCHESTRATOR_SYSTEM,
       messages: [{ role: "user", content: goal }],
+      maxTokens: 1024,
     });
 
-    const text = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === "text")
-      .map((b) => b.text)
-      .join("");
+    const text = response.textBlocks.join("");
 
     // Strip markdown fences if the model added them anyway
     const jsonText = text
@@ -88,26 +83,22 @@ export class OrchestratorAgent {
       )
       .join("\n\n");
 
-    const response = await this.client.messages.create({
+    const response: ChatResponse = await this.provider.chat({
       model: this.model,
-      max_tokens: 1024,
       messages: [
         {
           role: "user",
           content: `Goal: ${goal}\n\nTask results:\n${taskReport}\n\nWrite a concise summary of what was accomplished.`,
         },
       ],
+      maxTokens: 1024,
     });
 
-    return response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === "text")
-      .map((b) => b.text)
-      .join("");
+    return response.textBlocks.join("");
   }
 
   /**
    * Validate that the parsed value is a well-formed task array.
-   * Throws descriptively on any violation.
    */
   private validateAndNormalizeTasks(raw: unknown): TeamTask[] {
     if (!Array.isArray(raw)) {
@@ -123,7 +114,7 @@ export class OrchestratorAgent {
     }
 
     const seenIds = new Set<string>();
-    return raw.map((item, idx) => {
+    const normalized = raw.map((item, idx) => {
       if (typeof item !== "object" || item === null) {
         throw new Error(`Task at index ${idx} is not an object`);
       }
@@ -137,9 +128,34 @@ export class OrchestratorAgent {
           `Task at index ${idx} has missing or invalid "description"`
         );
       }
-      // Normalise before duplicate check to catch whitespace variants ("t1" vs " t1 ")
       const normalId = t["id"].trim();
       const normalDesc = t["description"].trim();
+      const blockedByRaw = t["blockedBy"];
+      const priorityRaw = t["priority"];
+
+      let blockedBy: string[] | undefined;
+      if (blockedByRaw !== undefined) {
+        if (
+          !Array.isArray(blockedByRaw) ||
+          blockedByRaw.some((dep) => typeof dep !== "string" || dep.trim() === "")
+        ) {
+          throw new Error(
+            `Task "${normalId}" has invalid "blockedBy"; expected string[]`
+          );
+        }
+        blockedBy = Array.from(new Set(blockedByRaw.map((dep) => dep.trim())));
+      }
+
+      let priority: number | undefined;
+      if (priorityRaw !== undefined) {
+        if (typeof priorityRaw !== "number" || !Number.isFinite(priorityRaw)) {
+          throw new Error(
+            `Task "${normalId}" has invalid "priority"; expected finite number`
+          );
+        }
+        priority = priorityRaw;
+      }
+
       if (seenIds.has(normalId)) {
         throw new Error(`Duplicate task id "${normalId}" at index ${idx}`);
       }
@@ -148,8 +164,22 @@ export class OrchestratorAgent {
       return {
         id: normalId,
         description: normalDesc,
+        blockedBy,
+        priority,
         status: "pending" as const,
       };
     });
+
+    for (const task of normalized) {
+      for (const depId of task.blockedBy ?? []) {
+        if (!seenIds.has(depId)) {
+          throw new Error(
+            `Task "${task.id}" depends on unknown task "${depId}" in orchestrator output`
+          );
+        }
+      }
+    }
+
+    return normalized;
   }
 }

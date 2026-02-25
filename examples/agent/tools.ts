@@ -61,7 +61,6 @@ export function getWorkspaceRoot(): string {
 
 /**
  * Read a file's contents from the filesystem.
- * Follows the pattern from ampcode.com/notes/how-to-build-an-agent.
  * Restricted to the configured workspace root.
  */
 export const readFileTool: ToolDefinition = {
