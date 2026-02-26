@@ -1,6 +1,6 @@
 #!/usr/bin/env ts-node
 /**
- * Vision QA Demo — analyze a screenshot using a vision-capable provider.
+ * Vision QA Demo — hook-activated harness component + markdown skill injection.
  *
  * Usage:
  *   npx ts-node demo-vision-qa.ts <image-path> [context]
@@ -11,7 +11,10 @@
  *   SSENRAH_MODEL=<model-id>
  */
 import "dotenv/config";
-import { runVisionQA } from "./skills/vision-qa-agent";
+import { Agent } from "./agent/agent";
+import { createProvider } from "./providers";
+import { createVisionQAHook } from "./harness/components/vision-qa";
+import { createDefaultToolRegistry } from "./tools/registry";
 
 // ANSI color helpers
 const colors = {
@@ -39,6 +42,41 @@ async function main(): Promise<void> {
   const imagePath = args[0];
   const context = args.slice(1).join(" ") || undefined;
 
+  const providerType =
+    (process.env["SSENRAH_PROVIDER"] as "gemini" | "openai" | "anthropic") ??
+    "gemini";
+  const model =
+    process.env["SSENRAH_MODEL"] ??
+    (providerType === "gemini"
+      ? "gemini-2.0-flash"
+      : providerType === "openai"
+      ? "openai/gpt-4o-mini"
+      : "claude-sonnet-4-20250514");
+
+  const provider = createProvider({ type: providerType, model });
+  const toolRegistry = createDefaultToolRegistry({
+    visionProvider: provider,
+    visionModel: model,
+    screenshotOutputDir: "./screenshots",
+  });
+
+  const agent = new Agent({
+    provider,
+    model,
+    toolRegistry,
+    // Base tools are intentionally minimal; Vision QA tools are hook-injected.
+    toolPacks: ["filesystem"],
+    hooks: [
+      createVisionQAHook({
+        model,
+        activateWhen: () => true,
+      }),
+    ],
+    intentRequired: false,
+    systemPrompt:
+      "You are a QA assistant. Use injected tools and skills to review UI screenshots.",
+  });
+
   console.log(`${colors.bold}Vision QA Analysis${colors.reset}`);
   console.log("─".repeat(60));
   console.log(`Image: ${imagePath}`);
@@ -47,27 +85,15 @@ async function main(): Promise<void> {
   console.log("Analyzing...\n");
 
   try {
-    const report = await runVisionQA(imagePath, { context });
+    const task = `Run UI/UX QA for imagePath="${imagePath}"${
+      context ? ` with context="${context}"` : ""
+    }.
+Use tool analyze_image_ui_qa and return concise findings + summary.`;
 
-    console.log(
-      `${colors.bold}Findings (${report.findings.length}):${colors.reset}\n`
-    );
-
-    for (const finding of report.findings) {
-      const color =
-        colors[finding.severity as keyof typeof colors] ?? colors.reset;
-      console.log(
-        `  ${color}[${finding.severity.toUpperCase()}]${colors.reset} ${finding.category}`
-      );
-      console.log(`    ${finding.description}`);
-      if (finding.location) console.log(`    Location: ${finding.location}`);
-      console.log(`    Suggestion: ${finding.suggestion}`);
-      console.log();
-    }
-
+    const result = await agent.run(task);
+    console.log(`${colors.bold}Agent Output:${colors.reset}\n${result.response}`);
     console.log("─".repeat(60));
-    console.log(`${colors.bold}Summary:${colors.reset} ${report.summary}`);
-    console.log(`Analyzed at: ${report.analyzedAt}`);
+    console.log(`Tools used: ${result.toolsUsed.join(", ") || "none"}`);
   } catch (err) {
     console.error(`\nError: ${(err as Error).message}`);
     process.exit(1);

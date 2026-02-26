@@ -5,9 +5,12 @@ import {
 } from "../providers/types";
 import {
   AgentConfig,
+  AgentRunHook,
+  AgentRunSettings,
   Message,
   RunOptions,
   ToolDefinition,
+  ToolRegistry,
   TurnResult,
 } from "./types";
 import { defaultTools } from "./tools";
@@ -49,6 +52,8 @@ export class Agent {
   private maxTurns: number;
   private systemPrompt: string;
   private tools: ToolDefinition[];
+  private toolRegistry?: ToolRegistry;
+  private hooks: AgentRunHook[];
   private signal?: AbortSignal;
   private intentRequired: boolean;
   private fallbackAgent?: FallbackAgent;
@@ -61,7 +66,9 @@ export class Agent {
     this.model = config.model;
     this.maxTokens = config.maxTokens ?? DEFAULT_MAX_TOKENS;
     this.maxTurns = config.maxTurns ?? DEFAULT_MAX_TURNS;
-    this.tools = config.tools ?? defaultTools;
+    this.toolRegistry = config.toolRegistry;
+    this.tools = this.resolveConfiguredTools(config);
+    this.hooks = config.hooks ?? [];
     this.signal = config.signal;
     this.intentRequired = config.intentRequired ?? true;
     this.eventLogger = new EventLogger({
@@ -113,6 +120,28 @@ export class Agent {
    *   - maxTurns is reached (safety guard against runaway loops)
    */
   async run(userMessage: string, options?: RunOptions): Promise<TurnResult> {
+    const runSettings: AgentRunSettings = {
+      model: this.model,
+      systemPrompt: this.systemPrompt,
+      tools: this.tools.map((tool) => tool),
+    };
+
+    for (const hook of this.hooks) {
+      await hook({
+        userMessage,
+        settings: runSettings,
+        history: this.getHistory(),
+        toolRegistry: this.toolRegistry,
+      });
+    }
+
+    const activeModel = runSettings.model.trim();
+    if (!activeModel) {
+      throw new Error("Agent run model cannot be empty after hooks");
+    }
+    const activeSystemPrompt = runSettings.systemPrompt;
+    const activeTools = dedupeToolsByName(runSettings.tools);
+
     this.history.push({ role: "user", content: userMessage });
 
     const toolsUsed: string[] = [];
@@ -133,7 +162,7 @@ export class Agent {
 
       turns++;
 
-      const toolSchemas = this.tools.map((t) => ({
+      const toolSchemas = activeTools.map((t) => ({
         name: t.name,
         description: t.description,
         inputSchema: t.inputSchema,
@@ -141,8 +170,8 @@ export class Agent {
 
       let streamedByProvider = false;
       const request = {
-        model: this.model,
-        systemPrompt: this.systemPrompt,
+        model: activeModel,
+        systemPrompt: activeSystemPrompt,
         messages: [...this.history],
         tools: toolSchemas,
         maxTokens: this.maxTokens,
@@ -306,7 +335,7 @@ export class Agent {
           data: { tool: tc.name, input: tc.input },
         });
 
-        const tool = this.tools.find((t) => t.name === tc.name);
+        const tool = activeTools.find((t) => t.name === tc.name);
         let content: string;
         let isError = false;
 
@@ -344,7 +373,7 @@ export class Agent {
             tc,
             content,
             intent,
-            this.tools
+            activeTools
           );
 
           if (fallbackResult.resolved && fallbackResult.result) {
@@ -384,6 +413,23 @@ export class Agent {
 
     return { response: finalResponse, toolsUsed, usage: totalUsage, done: true };
   }
+
+  private resolveConfiguredTools(config: AgentConfig): ToolDefinition[] {
+    if (config.tools) {
+      return dedupeToolsByName(config.tools);
+    }
+
+    if (config.toolPacks && config.toolPacks.length > 0) {
+      if (!config.toolRegistry) {
+        throw new Error(
+          "AgentConfig.toolPacks requires AgentConfig.toolRegistry"
+        );
+      }
+      return dedupeToolsByName(config.toolRegistry.resolvePacks(config.toolPacks));
+    }
+
+    return dedupeToolsByName(defaultTools);
+  }
 }
 
 function defaultEventLogPath(sessionId?: string): string {
@@ -398,4 +444,12 @@ function defaultEventLogPath(sessionId?: string): string {
     safeSessionId,
     "events.jsonl"
   );
+}
+
+function dedupeToolsByName(tools: ToolDefinition[]): ToolDefinition[] {
+  const byName = new Map<string, ToolDefinition>();
+  for (const tool of tools) {
+    byName.set(tool.name, tool);
+  }
+  return Array.from(byName.values());
 }

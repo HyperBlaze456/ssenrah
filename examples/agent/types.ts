@@ -19,6 +19,39 @@ export interface ToolDefinition {
 }
 
 /**
+ * Registry for resolving tool packs into concrete tool definitions.
+ * Lets runtimes inject only the tools required for the current task.
+ */
+export interface ToolRegistry {
+  resolvePacks(packNames: string[]): ToolDefinition[];
+}
+
+/**
+ * Mutable per-run settings that hooks can adjust before the tool loop starts.
+ */
+export interface AgentRunSettings {
+  model: string;
+  systemPrompt: string;
+  tools: ToolDefinition[];
+}
+
+/**
+ * Hook context passed before each run.
+ */
+export interface AgentRunHookContext {
+  userMessage: string;
+  settings: AgentRunSettings;
+  history: Message[];
+  toolRegistry?: ToolRegistry;
+}
+
+/**
+ * Hook function invoked before each run.
+ */
+export type AgentRunHook =
+  (context: AgentRunHookContext) => Promise<void> | void;
+
+/**
  * Message in the agent conversation history.
  * Provider-agnostic — uses the unified ChatMessage type.
  */
@@ -49,6 +82,12 @@ export interface AgentConfig {
   eventLogPath?: string;
   /** Optional session id for default event log path generation. */
   sessionId?: string;
+  /** Optional registry for resolving named tool packs. */
+  toolRegistry?: ToolRegistry;
+  /** Initial tool packs to resolve at construction time. */
+  toolPacks?: string[];
+  /** Optional pre-run hooks (for skill/tool/model injection). */
+  hooks?: AgentRunHook[];
 }
 
 /**

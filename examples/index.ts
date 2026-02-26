@@ -11,9 +11,9 @@
  */
 import "dotenv/config";
 import { Agent } from "./agent/agent";
-import { defaultTools } from "./agent/tools";
 import { createProvider } from "./providers";
 import { Team } from "./teams/team";
+import { createDefaultToolRegistry } from "./tools/registry";
 
 async function runSingleAgentDemo() {
   console.log("=".repeat(60));
@@ -31,12 +31,14 @@ async function runSingleAgentDemo() {
       : "claude-sonnet-4-20250514");
 
   const provider = createProvider({ type: providerType, model });
+  const toolRegistry = createDefaultToolRegistry();
   console.log(`Using provider: ${provider.name} / ${model}\n`);
 
   const agent = new Agent({
     provider,
     model,
-    tools: defaultTools,
+    toolRegistry,
+    toolPacks: ["filesystem"],
     systemPrompt: "You are a helpful agent. Complete tasks using your tools.",
   });
 

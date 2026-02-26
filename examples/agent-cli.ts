@@ -19,11 +19,11 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { Agent } from "./agent/agent";
-import { defaultTools } from "./agent/tools";
 import { createProvider } from "./providers";
 import { LLMProvider } from "./providers/types";
 import { Beholder } from "./harness/beholder";
 import { HarnessEvent } from "./harness/events";
+import { createDefaultToolRegistry } from "./tools/registry";
 
 type PaneName = "status" | "prompt" | "assistant" | "tasks" | "tools" | "events";
 
@@ -631,11 +631,13 @@ async function main() {
   let autoSavePrefs = true;
 
   const provider: LLMProvider = createProvider({ type: providerType, model });
+  const toolRegistry = createDefaultToolRegistry();
 
   const agent = new Agent({
     provider,
     model,
-    tools: defaultTools,
+    toolRegistry,
+    toolPacks: ["filesystem"],
     intentRequired: true,
     systemPrompt: `You are a helpful agent with access to filesystem tools.
 You can read files, list directories, and edit files.

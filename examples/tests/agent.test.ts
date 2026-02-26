@@ -178,6 +178,51 @@ describe("Agent", () => {
     expect(result.done).toBe(false);
     expect(result.toolsUsed).toEqual([]);
   });
+
+  it("resolves tools from registry packs (instead of injecting all defaults)", async () => {
+    const provider = createMockProvider("ok");
+    const customTool: ToolDefinition = {
+      name: "custom_tool",
+      description: "custom",
+      inputSchema: { type: "object", properties: {}, required: [] },
+      run: () => "ok",
+    };
+    const registry = {
+      resolvePacks: jest.fn().mockReturnValue([customTool]),
+    };
+
+    const agent = new Agent({
+      provider,
+      model: "test-model",
+      toolRegistry: registry,
+      toolPacks: ["custom-pack"],
+      intentRequired: false,
+    });
+
+    await agent.run("hello");
+    const call = (provider.chat as jest.Mock).mock.calls[0][0] as ChatRequest;
+    const toolNames = (call.tools ?? []).map((tool) => tool.name);
+    expect(toolNames).toEqual(["custom_tool"]);
+    expect(registry.resolvePacks).toHaveBeenCalledWith(["custom-pack"]);
+  });
+
+  it("applies pre-run hooks that override model", async () => {
+    const provider = createMockProvider("ok");
+    const agent = new Agent({
+      provider,
+      model: "base-model",
+      intentRequired: false,
+      hooks: [
+        (context) => {
+          context.settings.model = "hook-model";
+        },
+      ],
+    });
+
+    await agent.run("hello");
+    const call = (provider.chat as jest.Mock).mock.calls[0][0] as ChatRequest;
+    expect(call.model).toBe("hook-model");
+  });
 });
 
 describe("ToolDefinition", () => {

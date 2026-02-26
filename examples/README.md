@@ -18,7 +18,10 @@ This folder contains the hackathon harness reference implementation.
   - `beholder.ts` — drift/loop/rate/budget oversight
   - `fallback.ts` — constrained retry planner
   - `events.ts` — JSONL logger
-- **Vision QA showcase** (`tools/vision-qa.ts`, `skills/vision-qa-agent.ts`)
+- **Vision QA showcase**
+  - Harness component hook (`harness/components/vision-qa.ts`)
+  - Markdown skill (`skills/vision-qa.md`)
+  - Split tools (`tools/vision/capture-screenshot.ts`, `tools/vision/analyze-image.ts`)
 - **Team mode** (`teams/`)
   - Orchestrator + worker pool
   - Dependency-aware task graph scheduling (`blockedBy`, `priority`)

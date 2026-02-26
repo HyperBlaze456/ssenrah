@@ -13,9 +13,9 @@
  */
 import "dotenv/config";
 import { Agent } from "./agent/agent";
-import { defaultTools } from "./agent/tools";
 import { createProvider } from "./providers";
 import { Beholder } from "./harness/beholder";
+import { createDefaultToolRegistry } from "./tools/registry";
 
 const colors = {
   dim: "\x1b[90m",
@@ -49,6 +49,7 @@ async function main() {
 
   const provider = createProvider({ type: providerType, model });
   const fallbackProvider = createProvider({ type: providerType, model: fallbackModel });
+  const toolRegistry = createDefaultToolRegistry();
 
   console.log(`Provider: ${provider.name} / ${model}`);
   console.log(`Fallback: ${fallbackProvider.name} / ${fallbackModel}`);
@@ -60,7 +61,8 @@ async function main() {
   const agent = new Agent({
     provider,
     model,
-    tools: defaultTools,
+    toolRegistry,
+    toolPacks: ["filesystem"],
     intentRequired: true,
     fallbackProvider,
     fallbackModel,

@@ -1,9 +1,9 @@
 import { LLMProvider } from "../providers/types";
 import { Agent } from "../agent/agent";
-import { defaultTools } from "../agent/tools";
 import { TeamMessage, TeamTask } from "./types";
 import { Beholder } from "../harness/beholder";
 import { TeamMailbox } from "./mailbox";
+import { createDefaultToolRegistry } from "../tools/registry";
 
 /**
  * WorkerAgent — a specialized Agent that runs a single assigned task.
@@ -17,6 +17,7 @@ export class WorkerAgent {
   private provider: LLMProvider;
   private model: string;
   private beholder?: Beholder;
+  private toolRegistry = createDefaultToolRegistry();
 
   constructor(
     id: string,
@@ -33,7 +34,8 @@ export class WorkerAgent {
     this.agent = new Agent({
       provider,
       model,
-      tools: defaultTools,
+      toolRegistry: this.toolRegistry,
+      toolPacks: ["filesystem"],
       intentRequired: true,
       systemPrompt: this.buildSystemPrompt(),
     });
@@ -80,7 +82,8 @@ Use any relevant coordination context above while executing the task.`;
       this.agent = new Agent({
         provider: this.provider,
         model: this.model,
-        tools: defaultTools,
+        toolRegistry: this.toolRegistry,
+        toolPacks: ["filesystem"],
         signal,
         intentRequired: true,
         systemPrompt: this.buildSystemPrompt(),
