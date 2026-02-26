@@ -2,6 +2,7 @@ import { RuntimePhaseMachine } from "../harness/runtime-phase";
 import { PolicyEngine } from "../harness/policy-engine";
 import { BASELINE_TASK_SET } from "../evals/baseline-task-set";
 import { scoreBaselineResponses } from "../evals/scoring";
+import { evaluateMvpRegressionGates } from "../teams/regression-gates";
 
 describe("release gates", () => {
   it("Gate A: runtime phase machine enforces deterministic path", () => {
@@ -41,5 +42,16 @@ describe("release gates", () => {
     const report = scoreBaselineResponses(BASELINE_TASK_SET, responses);
     expect(report.normalizedScore).toBe(1);
   });
-});
 
+  it("Gate D: MVP regression gate aggregator enforces all safety toggles", () => {
+    const report = evaluateMvpRegressionGates({
+      replayEquivalent: true,
+      capEnforcementActive: true,
+      heartbeatPolicyActive: true,
+      trustGatingActive: true,
+      mutableGraphEnabled: true,
+      reconcileEnabled: true,
+    });
+    expect(report.passed).toBe(true);
+  });
+});

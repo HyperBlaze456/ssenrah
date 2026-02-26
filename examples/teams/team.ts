@@ -5,8 +5,13 @@ import { WorkerAgent } from "./worker";
 import { TeamConfig, TeamResult, TeamTask } from "./types";
 import { TaskGraph } from "./task-graph";
 import { TeamMailbox } from "./mailbox";
+import { RuntimePolicy } from "./policy";
+import { TeamEventBus } from "./events";
+import { TeamStateTracker } from "./state";
+import { PriorityMailbox } from "./priority-mailbox";
+import { ReconcileLoop } from "./reconcile";
+import { evaluateMvpRegressionGates } from "./regression-gates";
 
-const WORKER_TIMEOUT_MS = 120_000; // 2 minutes per worker
 const DEFAULT_ORCHESTRATOR_MODEL = "gemini-2.0-flash";
 const DEFAULT_WORKER_MODEL = "gemini-2.0-flash";
 const DEFAULT_WORKER_RESTART_LIMIT = 1;
@@ -54,10 +59,7 @@ function executeWithTimeout(
 
 function shouldRestartWorker(task: TeamTask): boolean {
   const error = task.error ?? "";
-  return (
-    error.includes("killed by Beholder") ||
-    error.includes("timed out")
-  );
+  return error.includes("killed by Beholder") || error.includes("timed out");
 }
 
 async function executeWithRestart(
@@ -117,6 +119,7 @@ export class Team {
   private orchestrator: OrchestratorAgent;
   private orchestratorProvider: LLMProvider;
   private workerProvider: LLMProvider;
+  private runtimePolicy: RuntimePolicy;
 
   constructor(config: TeamConfig) {
     const maxWorkers = config.maxWorkers ?? 3;
@@ -130,7 +133,12 @@ export class Team {
         `workerRestartLimit must be a non-negative integer, got: ${workerRestartLimit}`
       );
     }
+
     this.config = { ...config, maxWorkers, workerRestartLimit };
+    this.runtimePolicy = new RuntimePolicy(
+      config.runtimeFeatureFlags,
+      config.runtimeSafetyCaps
+    );
 
     // Create default providers if not provided
     this.orchestratorProvider = config.orchestratorProvider ?? createProvider({
@@ -158,107 +166,307 @@ export class Team {
     const workerRestartLimit =
       this.config.workerRestartLimit ?? DEFAULT_WORKER_RESTART_LIMIT;
 
-    if (verbose) {
-      console.log(`\n[Team: ${this.config.name}] Goal: ${goal}`);
-      console.log("─".repeat(60));
-    }
-
-    // Phase 1 — Plan
-    const tasks = await this.orchestrator.plan(goal);
-    const taskGraph = new TaskGraph(tasks);
+    const startedAtMs = Date.now();
+    const runId = `run-${startedAtMs}-${Math.random().toString(36).slice(2, 8)}`;
+    const eventBus = new TeamEventBus();
+    const state = new TeamStateTracker({ runId, goal });
     const mailbox = new TeamMailbox();
+    const priorityMailbox = new PriorityMailbox();
+    const reconcileLoop = new ReconcileLoop({
+      policy: this.runtimePolicy,
+      mailbox: priorityMailbox,
+      state,
+    });
 
-    if (verbose) {
-      console.log(`[Team] Planned ${tasks.length} task(s):`);
-      tasks.forEach((t) => console.log(`  • [${t.id}] ${t.description}`));
-      console.log("─".repeat(60));
-    }
+    try {
+      this.runtimePolicy.transition("planning");
+      state.setPhase("planning");
+      eventBus.emit("run_started", "team", { goal, runId });
 
-    // Phase 2 — Execute dependency-aware task batches
-    let workerSequence = 0;
-    while (!taskGraph.isComplete()) {
-      const batch = taskGraph.claimReadyTasks(maxWorkers);
-      if (batch.length === 0) {
-        const blocked = taskGraph.markBlockedTasksAsFailed();
-        if (blocked.length === 0) {
-          const pendingIds = taskGraph.getPendingTasks().map((t) => t.id).join(", ");
-          throw new Error(
-            `Task graph made no progress and has pending tasks: ${pendingIds || "none"}`
+      if (verbose) {
+        console.log(`\n[Team: ${this.config.name}] Goal: ${goal}`);
+        console.log("─".repeat(60));
+      }
+
+      // Phase 1 — Plan
+      const plannedTasks = await this.orchestrator.plan(goal);
+      const taskGraph = new TaskGraph(plannedTasks);
+      state.setTasks(taskGraph.getTasks());
+      state.setGraphVersion(taskGraph.getVersion());
+      eventBus.emit(
+        "plan_created",
+        "orchestrator",
+        { taskCount: plannedTasks.length },
+        { graphVersion: taskGraph.getVersion() }
+      );
+
+      if (verbose) {
+        console.log(`[Team] Planned ${plannedTasks.length} task(s):`);
+        plannedTasks.forEach((task) =>
+          console.log(`  • [${task.id}] ${task.description}`)
+        );
+        console.log("─".repeat(60));
+      }
+
+      // Phase 2 — Execute dependency-aware task batches
+      this.runtimePolicy.transition("executing");
+      state.setPhase("executing");
+
+      let workerSequence = 0;
+      while (!taskGraph.isComplete()) {
+        this.runtimePolicy.enforceRuntimeBudget(Date.now() - startedAtMs);
+        this.runtimePolicy.enforceWorkerCap(maxWorkers);
+
+        const batch = taskGraph.claimReadyTasks(maxWorkers);
+        state.setTasks(taskGraph.getTasks());
+        state.setGraphVersion(taskGraph.getVersion());
+        eventBus.emit(
+          "batch_claimed",
+          "scheduler",
+          { taskIds: batch.map((task) => task.id), size: batch.length },
+          { graphVersion: taskGraph.getVersion() }
+        );
+
+        if (batch.length === 0) {
+          const blocked = taskGraph.markBlockedTasksAsFailed();
+          state.setTasks(taskGraph.getTasks());
+          state.setGraphVersion(taskGraph.getVersion());
+
+          if (blocked.length === 0) {
+            const pendingIds = taskGraph
+              .getPendingTasks()
+              .map((task) => task.id)
+              .join(", ");
+            throw new Error(
+              `Task graph made no progress and has pending tasks: ${pendingIds || "none"}`
+            );
+          }
+
+          eventBus.emit(
+            "tasks_dependency_failed",
+            "scheduler",
+            { taskIds: blocked.map((task) => task.id) },
+            { graphVersion: taskGraph.getVersion() }
+          );
+          reconcileLoop.run({
+            trigger: "dependency_failure",
+            pendingTaskCount: taskGraph.getPendingTasks().length,
+          });
+
+          if (verbose) {
+            console.log(
+              `[Team] Marked ${blocked.length} task(s) failed due to dependency failures: ${blocked
+                .map((task) => task.id)
+                .join(", ")}`
+            );
+          }
+          continue;
+        }
+
+        const settled = await Promise.allSettled(
+          batch.map((task) => {
+            const workerId = `worker-${++workerSequence}`;
+            state.upsertHeartbeat({
+              workerId,
+              taskId: task.id,
+              status: "busy",
+              attempt: 1,
+              detail: "task attempt started",
+            });
+            eventBus.emit(
+              "worker_attempt_started",
+              workerId,
+              { taskId: task.id, attempt: 1 },
+              { graphVersion: taskGraph.getVersion() }
+            );
+
+            return executeWithRestart(
+              (attempt) =>
+                new WorkerAgent(
+                  `${workerId}-attempt-${attempt + 1}`,
+                  this.workerProvider,
+                  workerModel,
+                  verbose,
+                  this.config.beholder
+                ),
+              task,
+              this.runtimePolicy.caps.workerTimeoutMs,
+              workerRestartLimit,
+              mailbox,
+              verbose
+            );
+          })
+        );
+
+        for (let i = 0; i < settled.length; i++) {
+          const outcome = settled[i];
+          const task = batch[i];
+          let normalizedResult: TeamTask;
+
+          if (outcome.status === "fulfilled") {
+            normalizedResult = outcome.value;
+          } else {
+            normalizedResult = {
+              ...task,
+              status: "failed",
+              error: String(outcome.reason),
+              completedAt: new Date(),
+            };
+          }
+
+          taskGraph.resolveTask(normalizedResult);
+          state.setTasks(taskGraph.getTasks());
+          state.setGraphVersion(taskGraph.getVersion());
+          state.upsertHeartbeat({
+            workerId: normalizedResult.assignedTo ?? `worker-${i + 1}`,
+            taskId: normalizedResult.id,
+            status: normalizedResult.status === "done" ? "done" : "failed",
+            attempt: 1,
+            detail:
+              normalizedResult.status === "done"
+                ? "task completed"
+                : normalizedResult.error,
+          });
+
+          eventBus.emit(
+            "worker_attempt_finished",
+            normalizedResult.assignedTo ?? "worker",
+            {
+              taskId: normalizedResult.id,
+              status: normalizedResult.status,
+              error: normalizedResult.error,
+            },
+            { graphVersion: taskGraph.getVersion() }
+          );
+          eventBus.emit(
+            "task_resolved",
+            "scheduler",
+            {
+              taskId: normalizedResult.id,
+              status: normalizedResult.status,
+            },
+            { graphVersion: taskGraph.getVersion() }
           );
         }
-        if (verbose) {
+
+        const blocked = taskGraph.markBlockedTasksAsFailed();
+        state.setTasks(taskGraph.getTasks());
+        state.setGraphVersion(taskGraph.getVersion());
+        if (blocked.length > 0) {
+          eventBus.emit(
+            "tasks_dependency_failed",
+            "scheduler",
+            { taskIds: blocked.map((task) => task.id) },
+            { graphVersion: taskGraph.getVersion() }
+          );
+        }
+
+        const needsContextMessages = mailbox
+          .list("orchestrator")
+          .filter((message) =>
+            message.content.toLowerCase().includes("need context")
+          );
+        const reconcileDecision = reconcileLoop.run({
+          trigger: "task_resolved",
+          pendingTaskCount: taskGraph.getPendingTasks().length,
+          needsContext: needsContextMessages.map((message) => ({
+            workerId: message.from,
+            taskId: message.taskId,
+            detail: message.content,
+          })),
+        });
+        if (reconcileDecision.actions.length > 0) {
+          eventBus.emit(
+            "reconcile_completed",
+            "reconciler",
+            { actionCount: reconcileDecision.actions.length },
+            { graphVersion: taskGraph.getVersion() }
+          );
+        }
+
+        if (verbose && blocked.length > 0) {
           console.log(
-            `[Team] Marked ${blocked.length} task(s) failed due to dependency failures: ${blocked
-              .map((t) => t.id)
+            `[Team] Dependency-failed task(s): ${blocked
+              .map((task) => task.id)
               .join(", ")}`
           );
         }
-        continue;
       }
 
-      const settled = await Promise.allSettled(
-        batch.map((task) => {
-          const baseWorkerId = `worker-${++workerSequence}`;
-          return executeWithRestart(
-            (attempt) =>
-              new WorkerAgent(
-                `${baseWorkerId}-attempt-${attempt + 1}`,
-                this.workerProvider,
-                workerModel,
-                verbose,
-                this.config.beholder
-              ),
-            task,
-            WORKER_TIMEOUT_MS,
-            workerRestartLimit,
-            mailbox,
-            verbose
-          );
-        })
-      );
+      const completedTasks = taskGraph.getTasks();
 
-      for (let i = 0; i < settled.length; i++) {
-        const outcome = settled[i];
-        const task = batch[i];
-        let normalizedResult: TeamTask;
+      if (verbose) {
+        console.log("─".repeat(60));
+        console.log("[Team] All workers done. Synthesizing...");
+      }
 
-        if (outcome.status === "fulfilled") {
-          normalizedResult = outcome.value;
-        } else {
-          normalizedResult = {
-            ...task,
-            status: "failed",
-            error: String(outcome.reason),
-            completedAt: new Date(),
-          };
+      // Phase 3 — Synthesize
+      this.runtimePolicy.transition("synthesizing");
+      state.setPhase("synthesizing");
+      const summary = await this.orchestrator.summarize(goal, completedTasks);
+      const success = completedTasks.every((task) => task.status === "done");
+      const finalPhase = success ? "completed" : "failed";
+      this.runtimePolicy.transition(finalPhase);
+      state.finalize(finalPhase);
+      eventBus.emit(success ? "run_completed" : "run_failed", "team", {
+        success,
+        taskCount: completedTasks.length,
+      });
+
+      let rolloutGates;
+      if (this.runtimePolicy.flags.regressionGatesEnabled) {
+        let replayEquivalent = true;
+        if (this.runtimePolicy.flags.traceReplayEnabled) {
+          const replayed = TaskGraph.replay(plannedTasks, taskGraph.getEvents());
+          replayEquivalent =
+            JSON.stringify(
+              replayed.getTasks().map((task) => [task.id, task.status])
+            ) ===
+            JSON.stringify(
+              taskGraph.getTasks().map((task) => [task.id, task.status])
+            );
         }
 
-        taskGraph.resolveTask(normalizedResult);
+        rolloutGates = evaluateMvpRegressionGates({
+          replayEquivalent,
+          capEnforcementActive: true,
+          heartbeatPolicyActive: this.runtimePolicy.caps.heartbeatStalenessMs > 0,
+          trustGatingActive: this.runtimePolicy.flags.trustGatingEnabled,
+          mutableGraphEnabled: this.runtimePolicy.flags.mutableGraphEnabled,
+          reconcileEnabled: this.runtimePolicy.flags.reconcileEnabled,
+        });
+        eventBus.emit("regression_gate_evaluated", "team", {
+          passed: rolloutGates.passed,
+        });
       }
 
-      const blocked = taskGraph.markBlockedTasksAsFailed();
-      if (verbose && blocked.length > 0) {
-        console.log(
-          `[Team] Dependency-failed task(s): ${blocked.map((t) => t.id).join(", ")}`
-        );
+      this.runtimePolicy.transition("idle");
+
+      if (verbose) {
+        console.log("\n[Team] Summary:\n" + summary);
       }
+
+      return {
+        tasks: completedTasks,
+        summary,
+        success,
+        messages: mailbox.getAll(),
+        runtimeState: state.snapshot(),
+        runtimeEvents: eventBus.list(),
+        rolloutGates,
+      };
+    } catch (error) {
+      eventBus.emit("run_failed", "team", {
+        message: (error as Error).message,
+      });
+      state.finalize("failed");
+      if (this.runtimePolicy.canTransition("failed")) {
+        this.runtimePolicy.transition("failed");
+      }
+      if (this.runtimePolicy.canTransition("idle")) {
+        this.runtimePolicy.transition("idle");
+      }
+      throw error;
     }
-
-    const completedTasks = taskGraph.getTasks();
-
-    if (verbose) {
-      console.log("─".repeat(60));
-      console.log("[Team] All workers done. Synthesizing...");
-    }
-
-    // Phase 3 — Synthesize
-    const summary = await this.orchestrator.summarize(goal, completedTasks);
-    const success = completedTasks.every((t) => t.status === "done");
-
-    if (verbose) {
-      console.log("\n[Team] Summary:\n" + summary);
-    }
-
-    return { tasks: completedTasks, summary, success, messages: mailbox.getAll() };
   }
 }

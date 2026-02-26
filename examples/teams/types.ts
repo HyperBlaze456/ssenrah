@@ -1,5 +1,9 @@
 import { LLMProvider } from "../providers/types";
 import { Beholder } from "../harness/beholder";
+import type { FeatureFlags, SafetyCaps } from "./policy";
+import type { TeamRuntimeEvent } from "./events";
+import type { TeamRunState } from "./state";
+import type { RolloutGateReport } from "./regression-gates";
 
 /**
  * A task assigned to a worker agent in the team.
@@ -11,12 +15,14 @@ export interface TeamTask {
   blockedBy?: string[];
   priority?: number;
   metadata?: Record<string, unknown>;
-  status: "pending" | "in_progress" | "done" | "failed";
+  status: "pending" | "in_progress" | "done" | "failed" | "deferred";
   result?: string;
   error?: string;
   startedAt?: Date;
   completedAt?: Date;
 }
+
+export type TrustLevel = "untrusted" | "workspace" | "user" | "managed";
 
 /**
  * A message passed between agents in the team.
@@ -53,6 +59,14 @@ export interface TeamConfig {
   workerRestartLimit?: number;
   maxWorkers?: number;
   verbose?: boolean;
+  /**
+   * Runtime feature flags/caps for phased MVP migration.
+   * Defaults preserve current baseline behavior (Claude/Codex-like local permissive).
+   */
+  runtimeFeatureFlags?: Partial<FeatureFlags>;
+  runtimeSafetyCaps?: Partial<SafetyCaps>;
+  /** Trust tier used for extension loading checks when trust-gating is enabled. */
+  trustLevel?: TrustLevel;
 }
 
 /**
@@ -63,4 +77,7 @@ export interface TeamResult {
   summary: string;
   success: boolean;
   messages?: TeamMessage[];
+  runtimeState?: TeamRunState;
+  runtimeEvents?: TeamRuntimeEvent[];
+  rolloutGates?: RolloutGateReport;
 }
