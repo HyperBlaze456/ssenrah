@@ -23,6 +23,7 @@ import {
 import { FallbackAgent } from "../harness/fallback";
 import { Beholder, BeholderVerdict } from "../harness/beholder";
 import { EventLogger } from "../harness/events";
+import { createCheckpoint, saveCheckpoint } from "../harness/checkpoints";
 import { ApprovalHandler, PolicyEngine, RiskLevel } from "../harness/policy-engine";
 import os from "os";
 import path from "path";
@@ -56,6 +57,9 @@ export class Agent {
   private toolRegistry?: ToolRegistry;
   private hooks: AgentRunHook[];
   private signal?: AbortSignal;
+  private sessionId: string;
+  private checkpointBaseDir?: string;
+  private checkpointEnabled: boolean;
   private intentRequired: boolean;
   private fallbackAgent?: FallbackAgent;
   private beholder?: Beholder;
@@ -73,9 +77,13 @@ export class Agent {
     this.tools = this.resolveConfiguredTools(config);
     this.hooks = config.hooks ?? [];
     this.signal = config.signal;
+    this.sessionId = resolveSessionId(config.sessionId);
+    this.checkpointBaseDir = config.checkpointBaseDir;
+    this.checkpointEnabled =
+      config.checkpointEnabled ?? Boolean(config.sessionId?.trim());
     this.intentRequired = config.intentRequired ?? true;
     this.eventLogger = new EventLogger({
-      filePath: config.eventLogPath ?? defaultEventLogPath(config.sessionId),
+      filePath: config.eventLogPath ?? defaultEventLogPath(this.sessionId),
     });
 
     // Build system prompt — append intent instructions if required
@@ -190,6 +198,12 @@ export class Agent {
           done: result.done,
           reason: result.reason,
         },
+      });
+      this.persistTerminalCheckpoint({
+        userMessage,
+        result,
+        toolsUsed,
+        usage: totalUsage,
       });
       return result;
     };
@@ -526,20 +540,86 @@ export class Agent {
 
     return dedupeToolsByName(defaultTools);
   }
+
+  private persistTerminalCheckpoint(input: {
+    userMessage: string;
+    result: TurnResult;
+    toolsUsed: string[];
+    usage: { inputTokens: number; outputTokens: number };
+  }): void {
+    if (!this.checkpointEnabled) return;
+
+    try {
+      const checkpointId = `${Date.now()}-${input.result.status}`;
+      const checkpoint = createCheckpoint({
+        checkpointId,
+        phase: input.result.phase,
+        goal: input.userMessage,
+        summary: truncateCheckpointSummary(input.result.response),
+        policyProfile: this.policyEngine.profile,
+        metadata: {
+          status: input.result.status,
+          reason: input.result.reason,
+          toolsUsed: [...input.toolsUsed],
+          usage: { ...input.usage },
+        },
+      });
+      saveCheckpoint(checkpoint, {
+        baseDir: this.checkpointBaseDir,
+        sessionId: this.sessionId,
+      });
+    } catch (err) {
+      this.eventLogger.log({
+        timestamp: new Date().toISOString(),
+        type: "error",
+        agentId: "agent",
+        data: {
+          reason: "checkpoint_save_failed",
+          message: (err as Error).message,
+        },
+      });
+    }
+  }
 }
 
-function defaultEventLogPath(sessionId?: string): string {
-  const safeSessionId =
-    sessionId && sessionId.trim() !== ""
-      ? sessionId.trim()
-      : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+function defaultEventLogPath(sessionId: string): string {
   return path.join(
     os.homedir(),
     ".ssenrah",
     "sessions",
-    safeSessionId,
+    sessionId,
     "events.jsonl"
   );
+}
+
+function resolveSessionId(sessionId?: string): string {
+  if (sessionId && sessionId.trim() !== "") {
+    return sanitizeSessionId(sessionId);
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function sanitizeSessionId(sessionId: string): string {
+  const trimmed = sessionId.trim();
+  if (!trimmed) {
+    throw new Error("sessionId must be non-empty");
+  }
+  if (trimmed === "." || trimmed === "..") {
+    throw new Error("sessionId cannot be '.' or '..'");
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(trimmed)) {
+    throw new Error(
+      "sessionId may contain only letters, numbers, dot, underscore, or hyphen"
+    );
+  }
+  return trimmed;
+}
+
+function truncateCheckpointSummary(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  const max = 500;
+  return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 1)}…`;
 }
 
 function dedupeToolsByName(tools: ToolDefinition[]): ToolDefinition[] {

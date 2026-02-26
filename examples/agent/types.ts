@@ -85,8 +85,19 @@ export interface AgentConfig {
   fallbackModel?: string;
   /** Optional explicit event log path. */
   eventLogPath?: string;
-  /** Optional session id for default event log path generation. */
+  /** Optional session id for default event log/checkpoint path generation. */
   sessionId?: string;
+  /**
+   * Optional checkpoint base path (canonical default: ~/.ssenrah).
+   * Effective checkpoint path:
+   *   ~/.ssenrah/sessions/<sessionId>/checkpoints/*.json
+   */
+  checkpointBaseDir?: string;
+  /**
+   * Enable terminal checkpoint persistence for each run.
+   * Default: true when sessionId is provided, else false.
+   */
+  checkpointEnabled?: boolean;
   /** Optional registry for resolving named tool packs. */
   toolRegistry?: ToolRegistry;
   /** Initial tool packs to resolve at construction time. */

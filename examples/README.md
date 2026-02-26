@@ -18,6 +18,7 @@ This folder contains the hackathon harness reference implementation.
   - `beholder.ts` — drift/loop/rate/budget oversight
   - `fallback.ts` — constrained retry planner
   - `events.ts` — JSONL logger
+  - `checkpoints.ts` — session checkpoints at `~/.ssenrah/sessions/<sessionId>/checkpoints/*.json`
 - **Vision QA showcase**
   - Harness component hook (`harness/components/vision-qa.ts`)
   - Markdown skill (`skills/vision-qa.md`)

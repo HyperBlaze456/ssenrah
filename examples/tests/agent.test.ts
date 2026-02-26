@@ -3,6 +3,10 @@ import { ToolDefinition } from "../agent/types";
 import { Team } from "../teams/team";
 import { LLMProvider, ChatRequest, ChatResponse } from "../providers/types";
 import { Beholder } from "../harness/beholder";
+import { listCheckpointFiles, loadCheckpoint } from "../harness/checkpoints";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 
 /** Helper: create a mock provider that returns a fixed text response */
 function createMockProvider(text = "Hello"): LLMProvider {
@@ -30,6 +34,17 @@ describe("Agent", () => {
     expect(
       () => new Agent({ provider: createMockProvider(), model: "test" })
     ).not.toThrow();
+  });
+
+  it("rejects unsafe session ids", () => {
+    expect(
+      () =>
+        new Agent({
+          provider: createMockProvider(),
+          model: "test",
+          sessionId: "..",
+        })
+    ).toThrow(/sessionId/i);
   });
 
   it("getHistory returns empty array initially", () => {
@@ -524,6 +539,69 @@ describe("Agent", () => {
     await agent.run("hello");
     const call = (provider.chat as jest.Mock).mock.calls[0][0] as ChatRequest;
     expect(call.model).toBe("hook-model");
+  });
+
+  it("writes terminal checkpoints to canonical session path when enabled", async () => {
+    const provider = createMockProvider("checkpointed");
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "ssenrah-agent-checkpoints-"));
+    const sessionId = "session-loop7";
+    const agent = new Agent({
+      provider,
+      model: "test",
+      intentRequired: false,
+      sessionId,
+      checkpointBaseDir: baseDir,
+      checkpointEnabled: true,
+    });
+
+    const result = await agent.run("save this run");
+    expectDoneCompatibility(result, "completed");
+
+    const files = listCheckpointFiles({ baseDir, sessionId });
+    expect(files).toHaveLength(1);
+    expect(files[0]).toContain(
+      path.join("sessions", sessionId, "checkpoints")
+    );
+
+    const checkpoint = loadCheckpoint(files[0]);
+    expect(checkpoint.goal).toBe("save this run");
+    expect(checkpoint.phase).toBe("completed");
+    expect(checkpoint.metadata).toMatchObject({
+      status: "completed",
+    });
+
+    fs.rmSync(baseDir, { recursive: true, force: true });
+  });
+
+  it("does not crash when checkpoint persistence fails", async () => {
+    const provider = createMockProvider("still completes");
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "ssenrah-agent-checkpoint-failure-"));
+    const blockingFile = path.join(baseDir, "not-a-directory");
+    fs.writeFileSync(blockingFile, "block", "utf8");
+
+    const agent = new Agent({
+      provider,
+      model: "test",
+      intentRequired: false,
+      sessionId: "session-fail",
+      checkpointBaseDir: blockingFile,
+      checkpointEnabled: true,
+    });
+
+    const result = await agent.run("should finish despite checkpoint failure");
+    expectDoneCompatibility(result, "completed");
+
+    const errors = agent
+      .getEventLogger()
+      .getEvents()
+      .filter(
+        (event) =>
+          event.type === "error" &&
+          event.data["reason"] === "checkpoint_save_failed"
+      );
+    expect(errors.length).toBeGreaterThan(0);
+
+    fs.rmSync(baseDir, { recursive: true, force: true });
   });
 });
 
