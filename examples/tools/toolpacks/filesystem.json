@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "name": "filesystem",
+  "description": "Core local file navigation and edits",
+  "tools": ["read_file", "list_files", "edit_file"],
+  "riskProfile": "standard",
+  "tags": ["core", "local"]
+}
+

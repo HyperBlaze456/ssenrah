@@ -360,6 +360,50 @@ describe("Agent", () => {
     expect(runTool).toHaveBeenCalledTimes(1);
   });
 
+  it("fails closed when policy denies a tool call", async () => {
+    const provider: LLMProvider = {
+      name: "mock",
+      chat: jest.fn().mockResolvedValue({
+        textBlocks: [
+          `<intent>{"toolName":"exec_command","purpose":"run shell command","expectedOutcome":"command output","riskLevel":"exec"}</intent>`,
+        ],
+        toolCalls: [{ id: "tc1", name: "exec_command", input: { cmd: "rm -rf /tmp/x" } }],
+        stopReason: "tool_use",
+      } satisfies ChatResponse),
+    };
+
+    const runTool = jest.fn().mockResolvedValue("should not run");
+    const beholder = new Beholder();
+    const agent = new Agent({
+      provider,
+      model: "test",
+      policyProfile: "managed",
+      tools: [
+        {
+          name: "exec_command",
+          description: "exec",
+          inputSchema: { type: "object", properties: {}, required: [] },
+          run: runTool,
+        },
+      ],
+    });
+    agent.setBeholder(beholder);
+
+    const result = await agent.run("run command");
+
+    expectDoneCompatibility(result, "failed");
+    expect(result.phase).toBe("failed");
+    expect(result.reason).toBe("policy_denied");
+    expect(runTool).not.toHaveBeenCalled();
+
+    const events = agent.getEventLogger().getEvents();
+    const eventTypes = events.map((event) => event.type);
+    expect(eventTypes).toContain("policy");
+    expect(eventTypes).toContain("error");
+    expect(eventTypes).not.toContain("beholder_action");
+    expect(eventTypes).not.toContain("tool_call");
+  });
+
   it("returns cancelled status when signal is aborted", async () => {
     const provider = createMockProvider("unused");
     const controller = new AbortController();

@@ -335,39 +335,6 @@ export class Agent {
           );
         }
 
-        // Beholder check
-        if (this.beholder) {
-          const intent = intents.find((i) => i.toolName === tc.name) ?? {
-            toolName: tc.name,
-            purpose: "unknown",
-            expectedOutcome: "unknown",
-            riskLevel: "read" as const,
-            timestamp: new Date().toISOString(),
-          };
-
-          const verdict: BeholderVerdict = await this.beholder.evaluate(
-            intent,
-            tc,
-            response.usage
-          );
-
-          this.eventLogger.log({
-            timestamp: new Date().toISOString(),
-            type: "beholder_action",
-            agentId: "agent",
-            data: { action: verdict.action, reason: verdict.reason },
-          });
-
-          if (verdict.action === "kill") {
-            return finalizeTurn(
-              "failed",
-              `(agent killed by Beholder: ${verdict.reason})`,
-              "beholder_kill"
-            );
-          }
-          // "pause" and "warn" are logged but don't stop execution in autonomous mode
-        }
-
         const matchedIntent = intents.find((intent) => intent.toolName === tc.name);
         const inferredRisk: RiskLevel = matchedIntent?.riskLevel ?? "exec";
         const policyDecision = await this.policyEngine.evaluateToolCall(
@@ -400,14 +367,56 @@ export class Agent {
         }
 
         if (policyDecision.action === "deny") {
-          toolResultBlocks.push({
-            type: "tool_result",
-            toolUseId: tc.id,
-            name: tc.name,
-            content: `Tool "${tc.name}" denied by policy: ${policyDecision.reason}`,
-            isError: true,
+          this.eventLogger.log({
+            timestamp: new Date().toISOString(),
+            type: "error",
+            agentId: "agent",
+            data: {
+              reason: "policy_denied",
+              tool: tc.name,
+              riskLevel: inferredRisk,
+              policyReason: policyDecision.reason,
+            },
           });
-          continue;
+          return finalizeTurn(
+            "failed",
+            finalResponse ||
+              `Tool "${tc.name}" denied by policy: ${policyDecision.reason}`,
+            "policy_denied"
+          );
+        }
+
+        // Beholder check
+        if (this.beholder) {
+          const intent = matchedIntent ?? {
+            toolName: tc.name,
+            purpose: "unknown",
+            expectedOutcome: "unknown",
+            riskLevel: "read" as const,
+            timestamp: new Date().toISOString(),
+          };
+
+          const verdict: BeholderVerdict = await this.beholder.evaluate(
+            intent,
+            tc,
+            response.usage
+          );
+
+          this.eventLogger.log({
+            timestamp: new Date().toISOString(),
+            type: "beholder_action",
+            agentId: "agent",
+            data: { action: verdict.action, reason: verdict.reason },
+          });
+
+          if (verdict.action === "kill") {
+            return finalizeTurn(
+              "failed",
+              `(agent killed by Beholder: ${verdict.reason})`,
+              "beholder_kill"
+            );
+          }
+          // "pause" and "warn" are logged but don't stop execution in autonomous mode
         }
 
         toolsUsed.push(tc.name);

@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "name": "screenshot",
+  "description": "Capture UI screenshots for visual QA workflows",
+  "tools": ["capture_screenshot"],
+  "riskProfile": "standard",
+  "tags": ["vision", "qa", "ui"]
+}
+

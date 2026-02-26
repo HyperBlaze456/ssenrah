@@ -365,4 +365,31 @@ describe("EventLogger", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("accepts policy/error governance events for fail-closed auditing", () => {
+    const logger = new EventLogger();
+    logger.log({
+      timestamp: "2024-01-01T00:00:00Z",
+      type: "policy",
+      agentId: "agent-1",
+      data: { tool: "exec_command", action: "deny", reason: "managed_profile_denies_exec" },
+    });
+    logger.log({
+      timestamp: "2024-01-01T00:00:01Z",
+      type: "error",
+      agentId: "agent-1",
+      data: { reason: "policy_denied", tool: "exec_command" },
+    });
+
+    const events = logger.getEvents();
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({
+      type: "policy",
+      data: { action: "deny" },
+    });
+    expect(events[1]).toMatchObject({
+      type: "error",
+      data: { reason: "policy_denied" },
+    });
+  });
 });
