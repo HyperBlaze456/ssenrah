@@ -3,6 +3,10 @@ import { editFileTool, listFilesTool, readFileTool } from "../agent/tools";
 import type { LLMProvider } from "../providers/types";
 import { createCaptureScreenshotTool } from "./vision/capture-screenshot";
 import { createAnalyzeImageQATool } from "./vision/analyze-image";
+import type { SpawnAgentToolDeps } from "./spawn-agent";
+import { createSpawnAgentTool } from "./spawn-agent";
+import type { TaskToolsDeps } from "./task-tools";
+import { createTaskTools } from "./task-tools";
 
 export class StaticToolRegistry implements ToolRegistry {
   private readonly packs = new Map<string, ToolDefinition[]>();
@@ -33,6 +37,10 @@ export function createDefaultToolRegistry(options?: {
   visionProvider?: LLMProvider;
   visionModel?: string;
   screenshotOutputDir?: string;
+  /** Deps for the spawn_agent tool. When provided, registers the "spawn" pack. */
+  spawnDeps?: SpawnAgentToolDeps;
+  /** Deps for the task list tools. When provided, registers the "tasklist" pack. */
+  taskToolsDeps?: TaskToolsDeps;
 }): StaticToolRegistry {
   const registry = new StaticToolRegistry();
 
@@ -47,6 +55,14 @@ export function createDefaultToolRegistry(options?: {
     registry.registerPack("vision-analysis", [
       createAnalyzeImageQATool(options.visionProvider, options.visionModel),
     ]);
+  }
+
+  if (options?.spawnDeps) {
+    registry.registerPack("spawn", [createSpawnAgentTool(options.spawnDeps)]);
+  }
+
+  if (options?.taskToolsDeps) {
+    registry.registerPack("tasklist", createTaskTools(options.taskToolsDeps));
   }
 
   return registry;

@@ -1,14 +1,16 @@
 import { LLMProvider } from "../providers/types";
 import { Agent } from "../agent/agent";
+import type { ToolRegistry } from "../agent/types";
 import { TeamMessage, TeamTask } from "./types";
 import { Beholder } from "../harness/beholder";
 import { TeamMailbox } from "./mailbox";
-import { createDefaultToolRegistry } from "../tools/registry";
+import { createDefaultToolRegistry, StaticToolRegistry } from "../tools/registry";
 
 /**
  * WorkerAgent — a specialized Agent that runs a single assigned task.
  *
  * Now provider-agnostic — accepts an LLMProvider instead of model string.
+ * Optionally accepts an injected toolRegistry for spawn/tasklist packs.
  */
 export class WorkerAgent {
   readonly id: string;
@@ -17,25 +19,30 @@ export class WorkerAgent {
   private provider: LLMProvider;
   private model: string;
   private beholder?: Beholder;
-  private toolRegistry = createDefaultToolRegistry();
+  private toolRegistry: StaticToolRegistry;
+  private toolPacks: string[];
 
   constructor(
     id: string,
     provider: LLMProvider,
     model: string,
     verbose = false,
-    beholder?: Beholder
+    beholder?: Beholder,
+    toolRegistry?: StaticToolRegistry,
+    toolPacks?: string[]
   ) {
     this.id = id;
     this.verbose = verbose;
     this.provider = provider;
     this.model = model;
     this.beholder = beholder;
+    this.toolRegistry = toolRegistry ?? createDefaultToolRegistry();
+    this.toolPacks = toolPacks ?? ["filesystem"];
     this.agent = new Agent({
       provider,
       model,
       toolRegistry: this.toolRegistry,
-      toolPacks: ["filesystem"],
+      toolPacks: this.toolPacks,
       intentRequired: true,
       systemPrompt: this.buildSystemPrompt(),
     });
@@ -83,7 +90,7 @@ Use any relevant coordination context above while executing the task.`;
         provider: this.provider,
         model: this.model,
         toolRegistry: this.toolRegistry,
-        toolPacks: ["filesystem"],
+        toolPacks: this.toolPacks,
         signal,
         intentRequired: true,
         systemPrompt: this.buildSystemPrompt(),

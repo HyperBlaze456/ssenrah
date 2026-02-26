@@ -19,6 +19,7 @@ export type TeamRuntimeEventType =
   | "cap_reached"
   | "trace_replayed"
   | "regression_gate_evaluated"
+  | "task_verified"
   | "run_completed"
   | "run_failed";
 

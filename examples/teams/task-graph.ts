@@ -355,6 +355,176 @@ export class TaskGraph {
     return this.order.map((id) => cloneTask(this.tasks.get(id)!));
   }
 
+  /**
+   * Worker submits a result without marking the task complete.
+   * The task stays "in_progress" — the orchestrator must review and complete/reject it.
+   * Calling again overwrites the previous result (resubmission).
+   */
+  submitResult(taskId: string, result: string): TeamTask {
+    const existing = this.tasks.get(taskId);
+    if (!existing) {
+      throw new Error(`Cannot submit result for unknown task "${taskId}"`);
+    }
+    if (existing.status !== "in_progress") {
+      throw new Error(
+        `Cannot submit result for task "${taskId}" with status "${existing.status}" (must be in_progress)`
+      );
+    }
+
+    const patchResult = this.applyPatch(
+      {
+        actor: "worker",
+        reason: "submit_result",
+        operations: [
+          {
+            op: "update_task",
+            taskId,
+            patch: { result },
+          },
+        ],
+      },
+      this.graphVersion
+    );
+    if (!patchResult.applied) {
+      throw new Error(patchResult.error ?? "Failed to submit result");
+    }
+
+    return cloneTask(this.tasks.get(taskId)!);
+  }
+
+  /**
+   * Orchestrator marks a task as "done" after reviewing the submitted result.
+   * Throws if the task has no result yet.
+   */
+  completeTask(taskId: string): TeamTask {
+    const existing = this.tasks.get(taskId);
+    if (!existing) {
+      throw new Error(`Cannot complete unknown task "${taskId}"`);
+    }
+    if (existing.status !== "in_progress") {
+      throw new Error(
+        `Cannot complete task "${taskId}" with status "${existing.status}" (must be in_progress)`
+      );
+    }
+    if (!existing.result) {
+      throw new Error(
+        `Cannot complete task "${taskId}" without a submitted result`
+      );
+    }
+
+    const patchResult = this.applyPatch(
+      {
+        actor: "orchestrator",
+        reason: "complete_task",
+        operations: [
+          {
+            op: "update_task",
+            taskId,
+            patch: { status: "done", completedAt: new Date() },
+          },
+        ],
+      },
+      this.graphVersion
+    );
+    if (!patchResult.applied) {
+      throw new Error(patchResult.error ?? "Failed to complete task");
+    }
+
+    return cloneTask(this.tasks.get(taskId)!);
+  }
+
+  /**
+   * Orchestrator rejects a task's result.
+   * Sets status to "deferred" (non-terminal) so it can be re-queued.
+   */
+  rejectTask(taskId: string, reason: string): TeamTask {
+    const existing = this.tasks.get(taskId);
+    if (!existing) {
+      throw new Error(`Cannot reject unknown task "${taskId}"`);
+    }
+    if (existing.status !== "in_progress") {
+      throw new Error(
+        `Cannot reject task "${taskId}" with status "${existing.status}" (must be in_progress)`
+      );
+    }
+
+    const patchResult = this.applyPatch(
+      {
+        actor: "orchestrator",
+        reason: "reject_task",
+        operations: [
+          {
+            op: "update_task",
+            taskId,
+            patch: {
+              status: "deferred",
+              error: reason,
+              result: undefined,
+            },
+          },
+        ],
+      },
+      this.graphVersion
+    );
+    if (!patchResult.applied) {
+      throw new Error(patchResult.error ?? "Failed to reject task");
+    }
+
+    return cloneTask(this.tasks.get(taskId)!);
+  }
+
+  /**
+   * Re-queue a deferred task back to pending for retry.
+   */
+  requeueTask(taskId: string): TeamTask {
+    const existing = this.tasks.get(taskId);
+    if (!existing) {
+      throw new Error(`Cannot requeue unknown task "${taskId}"`);
+    }
+    if (existing.status !== "deferred") {
+      throw new Error(
+        `Cannot requeue task "${taskId}" with status "${existing.status}" (must be deferred)`
+      );
+    }
+
+    const patchResult = this.applyPatch(
+      {
+        actor: "orchestrator",
+        reason: "requeue_task",
+        operations: [
+          {
+            op: "update_task",
+            taskId,
+            patch: {
+              status: "pending",
+              error: undefined,
+              result: undefined,
+              assignedTo: undefined,
+              startedAt: undefined,
+              completedAt: undefined,
+            },
+          },
+        ],
+      },
+      this.graphVersion
+    );
+    if (!patchResult.applied) {
+      throw new Error(patchResult.error ?? "Failed to requeue task");
+    }
+
+    return cloneTask(this.tasks.get(taskId)!);
+  }
+
+  /**
+   * Get tasks awaiting orchestrator review (in_progress with a result submitted).
+   */
+  getAwaitingReview(): TeamTask[] {
+    return this.order
+      .map((id) => this.tasks.get(id)!)
+      .filter((task) => task.status === "in_progress" && task.result != null)
+      .map((task) => cloneTask(task));
+  }
+
   private applyOperation(
     operation: TaskGraphPatchOperation,
     draftTasks: TaskMap,

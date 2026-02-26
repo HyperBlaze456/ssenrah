@@ -1,5 +1,7 @@
 import { LLMProvider, ChatResponse } from "../providers/types";
 import { TeamTask } from "./types";
+import type { AgentTypeRegistry } from "../agents/registry";
+import { Agent } from "../agent/agent";
 
 const MAX_TASKS = 5;
 
@@ -95,6 +97,84 @@ export class OrchestratorAgent {
     });
 
     return response.textBlocks.join("");
+  }
+
+  /**
+   * Verify a worker's submitted result before completing the task.
+   *
+   * If a "verifier" agent type is registered, spawns a verifier agent.
+   * Otherwise, uses the orchestrator's own LLM for inline verification.
+   */
+  async verify(
+    task: TeamTask,
+    registry: AgentTypeRegistry,
+    provider: LLMProvider
+  ): Promise<{ approved: boolean; reason: string }> {
+    const verifierType = registry.get("verifier");
+
+    const verificationPrompt = `Verify this task result:
+
+Task: ${task.description}
+Submitted result: ${task.result ?? "(no result)"}
+
+Does the result adequately address the task? Respond with a JSON object:
+{"approved": true/false, "reason": "explanation"}`;
+
+    if (verifierType) {
+      // Spawn a dedicated verifier agent
+      const agent = new Agent({
+        provider,
+        model: verifierType.model,
+        maxTurns: verifierType.maxTurns ?? 5,
+        systemPrompt:
+          verifierType.systemPrompt ??
+          "You are a verification agent. Review task results and approve or reject them. Always respond with JSON: {\"approved\": boolean, \"reason\": string}.",
+        intentRequired: false,
+      });
+
+      try {
+        const result = await agent.run(verificationPrompt);
+        return this.parseVerificationResponse(result.response);
+      } catch {
+        return { approved: false, reason: "Verifier agent failed" };
+      }
+    }
+
+    // Inline verification via orchestrator's own LLM
+    try {
+      const response: ChatResponse = await this.provider.chat({
+        model: this.model,
+        messages: [{ role: "user", content: verificationPrompt }],
+        maxTokens: 512,
+      });
+      return this.parseVerificationResponse(response.textBlocks.join(""));
+    } catch {
+      return { approved: false, reason: "Inline verification failed" };
+    }
+  }
+
+  private parseVerificationResponse(text: string): {
+    approved: boolean;
+    reason: string;
+  } {
+    try {
+      const jsonText = text
+        .replace(/```json\s*/g, "")
+        .replace(/```\s*/g, "")
+        .trim();
+      const parsed = JSON.parse(jsonText);
+      if (typeof parsed.approved === "boolean" && typeof parsed.reason === "string") {
+        return { approved: parsed.approved, reason: parsed.reason };
+      }
+    } catch {
+      // fall through
+    }
+    // Default: approve if the response doesn't look like a rejection
+    const lowerText = text.toLowerCase();
+    if (lowerText.includes("reject") || lowerText.includes("fail") || lowerText.includes('"approved": false') || lowerText.includes('"approved":false')) {
+      return { approved: false, reason: text.slice(0, 200) };
+    }
+    return { approved: true, reason: "Verification passed (implicit)" };
   }
 
   /**

@@ -11,6 +11,9 @@ import { TeamStateTracker } from "./state";
 import { PriorityMailbox } from "./priority-mailbox";
 import { ReconcileLoop } from "./reconcile";
 import { evaluateMvpRegressionGates } from "./regression-gates";
+import { createDefaultToolRegistry, StaticToolRegistry } from "../tools/registry";
+import { createSpawnAgentTool } from "../tools/spawn-agent";
+import { createTaskTools } from "../tools/task-tools";
 
 const DEFAULT_ORCHESTRATOR_MODEL = "gemini-2.0-flash";
 const DEFAULT_WORKER_MODEL = "gemini-2.0-flash";
@@ -165,6 +168,8 @@ export class Team {
     const workerModel = this.config.workerModel ?? DEFAULT_WORKER_MODEL;
     const workerRestartLimit =
       this.config.workerRestartLimit ?? DEFAULT_WORKER_RESTART_LIMIT;
+    const verifyBeforeComplete = this.config.verifyBeforeComplete ?? false;
+    const agentTypeRegistry = this.config.agentTypeRegistry;
 
     const startedAtMs = Date.now();
     const runId = `run-${startedAtMs}-${Math.random().toString(36).slice(2, 8)}`;
@@ -281,14 +286,35 @@ export class Team {
             );
 
             return executeWithRestart(
-              (attempt) =>
-                new WorkerAgent(
+              (attempt) => {
+                // Build enriched tool registry if agent types are available
+                let workerToolRegistry: StaticToolRegistry | undefined;
+                let workerToolPacks: string[] | undefined;
+                if (agentTypeRegistry) {
+                  workerToolRegistry = createDefaultToolRegistry({
+                    spawnDeps: {
+                      registry: agentTypeRegistry,
+                      provider: this.workerProvider,
+                      toolRegistry: createDefaultToolRegistry(),
+                      currentDepth: 0,
+                      parentPolicyProfile: this.runtimePolicy.flags.trustGatingEnabled
+                        ? "strict"
+                        : "local-permissive",
+                    },
+                  });
+                  workerToolPacks = ["filesystem", "spawn"];
+                }
+
+                return new WorkerAgent(
                   `${workerId}-attempt-${attempt + 1}`,
                   this.workerProvider,
                   workerModel,
                   verbose,
-                  this.config.beholder
-                ),
+                  this.config.beholder,
+                  workerToolRegistry,
+                  workerToolPacks
+                );
+              },
               task,
               this.runtimePolicy.caps.workerTimeoutMs,
               workerRestartLimit,
@@ -314,7 +340,13 @@ export class Team {
             };
           }
 
-          taskGraph.resolveTask(normalizedResult);
+          if (verifyBeforeComplete && normalizedResult.status === "done") {
+            // Submit result without completing — orchestrator will verify
+            taskGraph.submitResult(normalizedResult.id, normalizedResult.result ?? "");
+          } else {
+            // Existing path — resolve directly
+            taskGraph.resolveTask(normalizedResult);
+          }
           state.setTasks(taskGraph.getTasks());
           state.setGraphVersion(taskGraph.getVersion());
           state.upsertHeartbeat({
@@ -347,6 +379,52 @@ export class Team {
             },
             { graphVersion: taskGraph.getVersion() }
           );
+        }
+
+        // Verification flow — after batch execution, before dependency cascade
+        if (verifyBeforeComplete && agentTypeRegistry) {
+          const awaitingReview = taskGraph.getAwaitingReview();
+          for (const task of awaitingReview) {
+            const verdict = await this.orchestrator.verify(
+              task,
+              agentTypeRegistry,
+              this.orchestratorProvider
+            );
+
+            if (verdict.approved) {
+              taskGraph.completeTask(task.id);
+              if (verbose) {
+                console.log(`[Team] Task ${task.id} verified and completed: ${verdict.reason}`);
+              }
+            } else {
+              taskGraph.rejectTask(task.id, verdict.reason);
+              if (verbose) {
+                console.log(`[Team] Task ${task.id} rejected: ${verdict.reason}`);
+              }
+              // Re-queue for retry (once)
+              try {
+                taskGraph.requeueTask(task.id);
+                if (verbose) {
+                  console.log(`[Team] Task ${task.id} re-queued for retry`);
+                }
+              } catch {
+                // Already terminal or other issue — leave as deferred
+              }
+            }
+
+            state.setTasks(taskGraph.getTasks());
+            state.setGraphVersion(taskGraph.getVersion());
+            eventBus.emit(
+              "task_verified",
+              "orchestrator",
+              {
+                taskId: task.id,
+                approved: verdict.approved,
+                reason: verdict.reason,
+              },
+              { graphVersion: taskGraph.getVersion() }
+            );
+          }
         }
 
         const blocked = taskGraph.markBlockedTasksAsFailed();

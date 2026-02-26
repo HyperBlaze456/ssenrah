@@ -3,6 +3,8 @@ import { PolicyEngine } from "../harness/policy-engine";
 import { BASELINE_TASK_SET } from "../evals/baseline-task-set";
 import { scoreBaselineResponses } from "../evals/scoring";
 import { evaluateMvpRegressionGates } from "../teams/regression-gates";
+import { detectPolicyBypassIncidents } from "../harness/policy-audit";
+import { HarnessEvent } from "../harness/events";
 
 describe("release gates", () => {
   it("Gate A: runtime phase machine enforces deterministic path", () => {
@@ -53,5 +55,30 @@ describe("release gates", () => {
       reconcileEnabled: true,
     });
     expect(report.passed).toBe(true);
+  });
+
+  it("Gate B+: staged policy events show zero approval bypass incidents", () => {
+    const stagedEvents: HarnessEvent[] = [
+      {
+        timestamp: "2026-02-26T00:00:00.000Z",
+        type: "policy",
+        agentId: "agent",
+        data: {
+          tool: "edit_file",
+          action: "await_user",
+          reason: "strict_profile_requires_approval",
+        },
+      },
+      {
+        timestamp: "2026-02-26T00:00:01.000Z",
+        type: "turn_result",
+        agentId: "agent",
+        data: { status: "await_user", reason: "policy_await_user" },
+      },
+    ];
+
+    const report = detectPolicyBypassIncidents(stagedEvents);
+    expect(report.blockedDecisions).toBe(1);
+    expect(report.incidents).toHaveLength(0);
   });
 });

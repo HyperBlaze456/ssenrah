@@ -4,6 +4,7 @@ import type { FeatureFlags, SafetyCaps } from "./policy";
 import type { TeamRuntimeEvent } from "./events";
 import type { TeamRunState } from "./state";
 import type { RolloutGateReport } from "./regression-gates";
+import type { AgentTypeRegistry } from "../agents/registry";
 
 /**
  * A task assigned to a worker agent in the team.
@@ -67,6 +68,13 @@ export interface TeamConfig {
   runtimeSafetyCaps?: Partial<SafetyCaps>;
   /** Trust tier used for extension loading checks when trust-gating is enabled. */
   trustLevel?: TrustLevel;
+  /** Registry of predefined agent types for subagent spawning. */
+  agentTypeRegistry?: AgentTypeRegistry;
+  /**
+   * When true, workers submit results but don't mark tasks complete.
+   * The orchestrator verifies work before completing. Default: false.
+   */
+  verifyBeforeComplete?: boolean;
 }
 
 /**
