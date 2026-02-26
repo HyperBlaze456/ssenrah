@@ -10,6 +10,7 @@
     "agent": "ts-node agent-cli.ts",
     "demo:harness": "ts-node demo-harness.ts",
     "demo:vision-qa": "ts-node demo-vision-qa.ts",
+    "eval:baseline": "ts-node evals/run-baseline.ts",
     "test": "jest --passWithNoTests",
     "test:watch": "jest --watch",
     "lint": "eslint . --ext .ts"

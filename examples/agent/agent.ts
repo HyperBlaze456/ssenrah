@@ -23,6 +23,7 @@ import {
 import { FallbackAgent } from "../harness/fallback";
 import { Beholder, BeholderVerdict } from "../harness/beholder";
 import { EventLogger } from "../harness/events";
+import { ApprovalHandler, PolicyEngine, RiskLevel } from "../harness/policy-engine";
 import os from "os";
 import path from "path";
 
@@ -59,6 +60,8 @@ export class Agent {
   private fallbackAgent?: FallbackAgent;
   private beholder?: Beholder;
   private eventLogger: EventLogger;
+  private policyEngine: PolicyEngine;
+  private approvalHandler?: ApprovalHandler;
   private history: Message[] = [];
 
   constructor(config: AgentConfig) {
@@ -84,12 +87,19 @@ export class Agent {
 
     // Set up fallback agent if a fallback provider is configured
     if (config.fallbackProvider) {
-      this.fallbackAgent = new FallbackAgent({
+    this.fallbackAgent = new FallbackAgent({
         provider: config.fallbackProvider,
         model: config.fallbackModel ?? config.model,
         maxRetries: 3,
       });
     }
+    this.policyEngine =
+      config.policyEngine ??
+      new PolicyEngine({
+        profile: config.policyProfile,
+        maxToolCalls: config.policyMaxToolCalls,
+      });
+    this.approvalHandler = config.approvalHandler;
   }
 
   /** Attach a Beholder overseer to monitor this agent. */
@@ -147,17 +157,51 @@ export class Agent {
     const toolsUsed: string[] = [];
     let finalResponse = "";
     let turns = 0;
+    let completedNormally = false;
     const totalUsage = { inputTokens: 0, outputTokens: 0 };
+    const finalizeTurn = (
+      status: TurnResult["status"],
+      response: string,
+      reason?: string
+    ): TurnResult => {
+      const done = status === "completed";
+      const phase =
+        status === "completed"
+          ? "completed"
+          : status === "await_user"
+            ? "await_user"
+            : "failed";
+      const result: TurnResult = {
+        status,
+        response,
+        toolsUsed,
+        usage: totalUsage,
+        done,
+        phase,
+        reason,
+      };
+      this.eventLogger.log({
+        timestamp: new Date().toISOString(),
+        type: "turn_result",
+        agentId: "agent",
+        data: {
+          status: result.status,
+          phase: result.phase,
+          done: result.done,
+          reason: result.reason,
+        },
+      });
+      return result;
+    };
 
     while (turns < this.maxTurns) {
       // Check for external cancellation before each API call
       if (this.signal?.aborted) {
-        return {
-          response: finalResponse || "(agent cancelled)",
-          toolsUsed,
-          usage: totalUsage,
-          done: false,
-        };
+        return finalizeTurn(
+          "cancelled",
+          finalResponse || "(agent cancelled)",
+          "signal_aborted"
+        );
       }
 
       turns++;
@@ -224,16 +268,16 @@ export class Agent {
 
       // Handle non-terminal stop reasons
       if (response.stopReason === "max_tokens") {
-        return {
-          response: finalResponse || "(response truncated by max_tokens)",
-          toolsUsed,
-          usage: totalUsage,
-          done: false,
-        };
+        return finalizeTurn(
+          "max_tokens",
+          finalResponse || "(response truncated by max_tokens)",
+          "provider_max_tokens"
+        );
       }
 
       // No tool calls → done
       if (response.toolCalls.length === 0) {
+        completedNormally = true;
         break;
       }
 
@@ -284,12 +328,11 @@ export class Agent {
       for (const tc of response.toolCalls) {
         // Check abort before each tool
         if (this.signal?.aborted) {
-          return {
-            response: finalResponse || "(agent cancelled during tool execution)",
-            toolsUsed,
-            usage: totalUsage,
-            done: false,
-          };
+          return finalizeTurn(
+            "cancelled",
+            finalResponse || "(agent cancelled during tool execution)",
+            "signal_aborted"
+          );
         }
 
         // Beholder check
@@ -316,14 +359,55 @@ export class Agent {
           });
 
           if (verdict.action === "kill") {
-            return {
-              response: `(agent killed by Beholder: ${verdict.reason})`,
-              toolsUsed,
-              usage: totalUsage,
-              done: false,
-            };
+            return finalizeTurn(
+              "failed",
+              `(agent killed by Beholder: ${verdict.reason})`,
+              "beholder_kill"
+            );
           }
           // "pause" and "warn" are logged but don't stop execution in autonomous mode
+        }
+
+        const matchedIntent = intents.find((intent) => intent.toolName === tc.name);
+        const inferredRisk: RiskLevel = matchedIntent?.riskLevel ?? "exec";
+        const policyDecision = await this.policyEngine.evaluateToolCall(
+          {
+            toolName: tc.name,
+            riskLevel: inferredRisk,
+            toolCallCount: toolsUsed.length + 1,
+          },
+          this.approvalHandler
+        );
+
+        this.eventLogger.log({
+          timestamp: new Date().toISOString(),
+          type: "policy",
+          agentId: "agent",
+          data: {
+            tool: tc.name,
+            riskLevel: inferredRisk,
+            action: policyDecision.action,
+            reason: policyDecision.reason,
+          },
+        });
+
+        if (policyDecision.action === "await_user") {
+          return finalizeTurn(
+            "await_user",
+            finalResponse || `(approval required before running "${tc.name}")`,
+            "policy_await_user"
+          );
+        }
+
+        if (policyDecision.action === "deny") {
+          toolResultBlocks.push({
+            type: "tool_result",
+            toolUseId: tc.id,
+            name: tc.name,
+            content: `Tool "${tc.name}" denied by policy: ${policyDecision.reason}`,
+            isError: true,
+          });
+          continue;
         }
 
         toolsUsed.push(tc.name);
@@ -402,16 +486,19 @@ export class Agent {
       this.history.push({ role: "user", content: toolResultBlocks });
     }
 
-    if (turns >= this.maxTurns) {
-      return {
-        response: finalResponse || "(agent stopped: max turns reached)",
-        toolsUsed,
-        usage: totalUsage,
-        done: false,
-      };
+    if (completedNormally) {
+      return finalizeTurn("completed", finalResponse);
     }
 
-    return { response: finalResponse, toolsUsed, usage: totalUsage, done: true };
+    if (turns >= this.maxTurns) {
+      return finalizeTurn(
+        "max_turns",
+        finalResponse || "(agent stopped: max turns reached)",
+        "max_turns_reached"
+      );
+    }
+
+    return finalizeTurn("completed", finalResponse);
   }
 
   private resolveConfiguredTools(config: AgentConfig): ToolDefinition[] {

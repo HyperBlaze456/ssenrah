@@ -3,7 +3,15 @@ import * as path from "path";
 
 export interface HarnessEvent {
   timestamp: string;
-  type: "intent" | "tool_call" | "tool_result" | "beholder_action" | "fallback" | "error";
+  type:
+    | "intent"
+    | "tool_call"
+    | "tool_result"
+    | "policy"
+    | "beholder_action"
+    | "fallback"
+    | "turn_result"
+    | "error";
   agentId: string;
   data: Record<string, unknown>;
 }

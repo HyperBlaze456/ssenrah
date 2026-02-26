@@ -5,6 +5,11 @@ import {
   ToolCall,
   ToolSchema,
 } from "../providers/types";
+import type {
+  ApprovalHandler,
+  PolicyEngine,
+  PolicyProfile,
+} from "../harness/policy-engine";
 
 /**
  * Defines a tool that the agent can invoke.
@@ -88,17 +93,43 @@ export interface AgentConfig {
   toolPacks?: string[];
   /** Optional pre-run hooks (for skill/tool/model injection). */
   hooks?: AgentRunHook[];
+  /**
+   * Runtime tool-governance profile.
+   * Default: "local-permissive" (close to Codex/Claude CLI local behavior).
+   */
+  policyProfile?: PolicyProfile;
+  /** Optional override for tool-call cap enforced by PolicyEngine. */
+  policyMaxToolCalls?: number;
+  /** Optional custom policy engine instance. */
+  policyEngine?: PolicyEngine;
+  /** Optional human approval handler for await_user policy decisions. */
+  approvalHandler?: ApprovalHandler;
 }
 
 /**
  * Result of a single agent turn.
  */
 export interface TurnResult {
+  status:
+    | "completed"
+    | "await_user"
+    | "failed"
+    | "cancelled"
+    | "max_turns"
+    | "max_tokens";
   response: string;
   toolsUsed: string[];
   usage: { inputTokens: number; outputTokens: number };
-  /** true if agent completed normally; false if stopped by max_tokens or maxTurns */
+  /** compatibility field: true only when status === "completed" */
   done: boolean;
+  phase:
+    | "planning"
+    | "executing"
+    | "reconciling"
+    | "await_user"
+    | "failed"
+    | "completed";
+  reason?: string;
 }
 
 export interface RunOptions {
