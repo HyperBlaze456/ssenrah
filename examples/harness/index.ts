@@ -4,6 +4,7 @@ export * from "./fallback";
 export * from "./events";
 export * from "./runtime-phase";
 export * from "./policy-engine";
+export * from "./checkpoint";
 export * from "./hooks";
 export * from "./skills";
 export * from "./components";

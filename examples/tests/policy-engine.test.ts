@@ -22,9 +22,17 @@ describe("PolicyEngine", () => {
 
     await expect(
       engine.evaluateToolCall({
+        toolName: "exec_command",
+        riskLevel: "exec",
+        toolCallCount: 3,
+      })
+    ).resolves.toMatchObject({ action: "allow" });
+
+    await expect(
+      engine.evaluateToolCall({
         toolName: "rm_rf",
         riskLevel: "destructive",
-        toolCallCount: 3,
+        toolCallCount: 4,
       })
     ).resolves.toMatchObject({ action: "await_user" });
   });
