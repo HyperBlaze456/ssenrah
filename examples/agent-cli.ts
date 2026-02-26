@@ -22,7 +22,8 @@ import { Agent } from "./agent/agent";
 import { createProvider } from "./providers";
 import { LLMProvider } from "./providers/types";
 import { Beholder } from "./harness/beholder";
-import { HarnessEvent } from "./harness/events";
+import { HarnessEvent, summarizeHarnessEventTypes } from "./harness/events";
+import { buildRiskStatusLines } from "./harness/risk-status";
 import { createDefaultToolRegistry } from "./tools/registry";
 
 type PaneName = "status" | "prompt" | "assistant" | "tasks" | "tools" | "events";
@@ -177,18 +178,19 @@ function summarizeToolLines(events: HarnessEvent[]): string[] {
 function summarizeEventLines(events: HarnessEvent[]): string[] {
   if (events.length === 0) return ["No harness events captured for this turn."];
 
-  const counts = new Map<HarnessEvent["type"], number>();
-  for (const event of events) {
-    counts.set(event.type, (counts.get(event.type) ?? 0) + 1);
-  }
+  const counts = summarizeHarnessEventTypes(events);
+  const known = counts.knownCounts;
 
   const summary = [
-    `intent=${counts.get("intent") ?? 0}`,
-    `tool_call=${counts.get("tool_call") ?? 0}`,
-    `tool_result=${counts.get("tool_result") ?? 0}`,
-    `beholder=${counts.get("beholder_action") ?? 0}`,
-    `fallback=${counts.get("fallback") ?? 0}`,
-    `error=${counts.get("error") ?? 0}`,
+    `intent=${known.intent}`,
+    `policy=${known.policy}`,
+    `tool_call=${known.tool_call}`,
+    `tool_result=${known.tool_result}`,
+    `beholder=${known.beholder_action}`,
+    `fallback=${known.fallback}`,
+    `turn_result=${known.turn_result}`,
+    `error=${known.error}`,
+    `unknown=${counts.unknownCount}`,
   ].join("  ");
 
   const lastError = [...events].reverse().find((event) => event.type === "error");
@@ -205,6 +207,9 @@ function summarizeEventLines(events: HarnessEvent[]): string[] {
   if (lastError) {
     const reason = toSafeString(lastError.data["reason"]) || "unknown";
     lines.push(`Last error: ${reason}`);
+  }
+  if (counts.unknownCount > 0) {
+    lines.push(`Unknown event types grouped: ${counts.unknownTypes.join(", ")}`);
   }
 
   return lines;
@@ -233,6 +238,7 @@ function printTurnDashboard(
     [
       `elapsed=${elapsedMs}ms  stream=${streamEnabled ? "on" : "off"}`,
       `tokens in/out=${tokens.input}/${tokens.output}`,
+      ...buildRiskStatusLines(events),
     ],
     "dim"
   );
@@ -493,6 +499,7 @@ function renderLiveTurn(snapshot: LiveTurnSnapshot): void {
       snapshot.overseer ? "on" : "off"
     }  tokens=${snapshot.tokensIn}/${snapshot.tokensOut}`,
     `tools used=${snapshot.toolsUsed.length > 0 ? snapshot.toolsUsed.join(", ") : "none"}`,
+    ...buildRiskStatusLines(snapshot.events),
   ];
 
   const assistantSource =
