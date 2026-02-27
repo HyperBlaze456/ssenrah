@@ -1,5 +1,7 @@
 # ssenrah — Agent Harness
 
+> **[Architecture Reference](ARCHITECTURE.md)** — full specs, core logic, provider system, task lifecycle, policy engine, and all harness features.
+
 ## Design Decisions
 
 ### Task Completion Ownership
