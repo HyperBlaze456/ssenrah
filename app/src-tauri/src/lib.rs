@@ -2,7 +2,6 @@ mod commands;
 mod errors;
 mod io;
 mod lockfile;
-mod logging;
 mod platform;
 mod schema;
 mod types;

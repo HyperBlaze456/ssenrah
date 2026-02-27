@@ -46,19 +46,8 @@
     "shell": {
       "open": true
     },
-    "dialog": {},
     "fs": {
-      "scope": {
-        "allow": [
-          "$HOME/.claude/**",
-          "$HOME/**",
-          "$APPCONFIG/**",
-          "$RESOURCE/**"
-        ]
-      }
-    },
-    "updater": {
-      "active": false
+      "requireLiteralLeadingDot": false
     }
   }
 }
