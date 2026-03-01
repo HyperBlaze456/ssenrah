@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+import { MarkdownEditor } from "@/components/shared/MarkdownEditor";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { Select } from "@/components/ui/select";
@@ -278,12 +278,10 @@ export function AgentEditor({ scope, filename, onClose }: AgentEditorProps) {
       {/* Body / Prompt */}
       <div className="space-y-2">
         <Label>Agent Prompt (Markdown Body)</Label>
-        <Textarea
+        <MarkdownEditor
           value={body}
-          onChange={(e) => setBody(e.target.value)}
+          onChange={setBody}
           placeholder="Describe the agent's behavior and instructions..."
-          className="min-h-[200px] font-mono text-sm resize-y"
-          spellCheck={false}
         />
       </div>
     </div>

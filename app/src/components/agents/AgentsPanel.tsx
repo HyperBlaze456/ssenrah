@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { useAgentsStore } from "@/lib/store/agents";
+import { useProjectStore } from "@/lib/store/project";
 import { useUiStore } from "@/lib/store/ui";
 import { AgentCard } from "./AgentCard";
 import { AgentEditor } from "./AgentEditor";
@@ -23,10 +24,11 @@ export function AgentsPanel() {
   const [editing, setEditing] = useState(false);
   const [editFilename, setEditFilename] = useState<string | null>(null);
   const [editScope, setEditScope] = useState<string>(scope);
+  const projectRoot = useProjectStore((s) => s.info?.projectRoot);
 
   useEffect(() => {
     loadList();
-  }, [loadList]);
+  }, [loadList, projectRoot]);
 
   const handleSelect = useCallback(
     (agentScope: string, filename: string) => {

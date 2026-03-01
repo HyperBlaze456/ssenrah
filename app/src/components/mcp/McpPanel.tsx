@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMcpStore } from "@/lib/store/mcp";
+import { useProjectStore } from "@/lib/store/project";
 import { useUiStore } from "@/lib/store/ui";
 import { McpServerCard } from "./McpServerCard";
 import { McpServerForm } from "./McpServerForm";
@@ -34,12 +35,13 @@ export function McpPanel() {
   const [tab, setTab] = useState("servers");
   const [formOpen, setFormOpen] = useState(false);
   const [editingServer, setEditingServer] = useState<{ name: string; def: McpServerDefinition } | null>(null);
+  const projectRoot = useProjectStore((s) => s.info?.projectRoot);
 
   useEffect(() => {
     if (status.state === "idle") {
       load(mcpSource);
     }
-  }, [mcpSource, status.state, load]);
+  }, [mcpSource, status.state, load, projectRoot]);
 
   if (status.state === "error") {
     return <ErrorBanner error={status.error} onRetry={() => load(mcpSource)} />;

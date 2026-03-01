@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { useSkillsStore } from "@/lib/store/skills";
+import { useProjectStore } from "@/lib/store/project";
 import { useUiStore } from "@/lib/store/ui";
 import { SkillEditor } from "./SkillEditor";
 import { ErrorBanner } from "@/components/shared/ErrorBanner";
@@ -90,10 +91,11 @@ export function SkillsPanel() {
   const [editing, setEditing] = useState(false);
   const [editDirectory, setEditDirectory] = useState<string | null>(null);
   const [editScope, setEditScope] = useState<string>(scope);
+  const projectRoot = useProjectStore((s) => s.info?.projectRoot);
 
   useEffect(() => {
     loadList();
-  }, [loadList]);
+  }, [loadList, projectRoot]);
 
   const handleSelect = useCallback(
     (skillScope: string, directory: string) => {

@@ -1,8 +1,9 @@
 import { useEffect, useCallback, useState } from "react";
 import { useMemoryStore } from "@/lib/store/memory";
+import { useProjectStore } from "@/lib/store/project";
 import { ErrorBanner } from "@/components/shared/ErrorBanner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
+import { MarkdownEditor } from "@/components/shared/MarkdownEditor";
 import { Badge } from "@/components/ui/badge";
 import type { MemoryScope } from "@/types";
 
@@ -31,8 +32,8 @@ function ScopeEditor({ scope }: { scope: MemoryScope }) {
   const load = useMemoryStore((s) => s.load);
 
   const handleChange = useCallback(
-    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      update(scope, e.target.value);
+    (val: string) => {
+      update(scope, val);
     },
     [scope, update],
   );
@@ -58,7 +59,7 @@ function ScopeEditor({ scope }: { scope: MemoryScope }) {
           <span className="text-xs text-muted-foreground">Loading...</span>
         )}
       </div>
-      <Textarea
+      <MarkdownEditor
         value={content ?? ""}
         onChange={handleChange}
         disabled={isLoading}
@@ -67,8 +68,7 @@ function ScopeEditor({ scope }: { scope: MemoryScope }) {
             ? "No memory file exists at this scope yet. Start typing to create one."
             : "Enter markdown instructions for Claude..."
         }
-        className="min-h-[400px] font-mono text-sm resize-y"
-        spellCheck={false}
+        minHeight="400px"
       />
     </div>
   );
@@ -76,11 +76,12 @@ function ScopeEditor({ scope }: { scope: MemoryScope }) {
 
 export function MemoryPanel() {
   const loadAll = useMemoryStore((s) => s.loadAll);
+  const projectRoot = useProjectStore((s) => s.info?.projectRoot);
   const [activeTab, setActiveTab] = useState<string>("user");
 
   useEffect(() => {
     loadAll();
-  }, [loadAll]);
+  }, [loadAll, projectRoot]);
 
   return (
     <div className="space-y-4">
