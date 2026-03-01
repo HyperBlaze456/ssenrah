@@ -8,6 +8,7 @@ export function Header() {
   return (
     <header className="flex h-12 items-center justify-between border-b border-border bg-card px-4">
       <div className="flex items-center gap-3">
+        <img src="/logo.png" alt="ssenrah" className="h-7 w-7" />
         <h1 className="text-lg font-bold tracking-tight text-primary">ssenrah</h1>
         {platformInfo && !platformInfo.claudeCodeInstalled && (
           <span className="text-xs text-muted-foreground">(Claude Code not detected)</span>
