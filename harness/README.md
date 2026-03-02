@@ -48,17 +48,18 @@ npm test
 npm run agent -- --provider gemini --model gemini-2.0-flash --overseer
 # Enable MCP servers from project config
 npm run agent -- --provider gemini --model gemini-2.0-flash --mcp --mcp-config ./.ssenrah/mcp.servers.json
-# Streamed TUI mode (default on, disable with --no-stream)
+# Streamed response output (default on, disable with --no-stream)
 npm run agent -- --provider openai --model gpt-4o --stream
-# Disable split-pane live layout if needed
-npm run agent -- --no-layout
+# Live split-pane layout is now opt-in
+npm run agent -- --layout
 # Keep split-pane layout but avoid full-screen redraws
 npm run agent -- --layout-style diff
 # Reset persisted CLI preferences
 npm run agent -- --reset-prefs
 # In-session commands
-# /help  /stream on|off  /layout on|off  /layout style full|diff  /panels on|off  /pane ...  /prefs ...  /clear  /exit
-# Keyboard shortcuts: Ctrl+L clear, Ctrl+G stream, Ctrl+O layout, Ctrl+B panels
+# /help  /stream on|off  /layout on|off  /layout style full|diff  /panels on|off  /pane ...  /prefs ...  /send  /cancel  /clear  /exit
+# Keyboard shortcuts: Ctrl+L clear, Ctrl+G stream, Ctrl+O layout, Ctrl+B panels, Ctrl+J newline
+# Multiline prompt: use "\ + Enter" or Ctrl+J to continue, then Enter to submit (or /send)
 
 # Harness demo
 npm run demo:harness

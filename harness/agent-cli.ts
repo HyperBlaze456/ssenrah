@@ -8,8 +8,11 @@
  *   npx ts-node agent-cli.ts --provider anthropic --model claude-sonnet-4-20250514
  *   npx ts-node agent-cli.ts --provider openai --model gpt-4o
  *   npx ts-node agent-cli.ts --overseer
+ *   npx ts-node agent-cli.ts --layout
  *   npx ts-node agent-cli.ts --no-layout
  *   npx ts-node agent-cli.ts --layout-style diff
+ *   npx ts-node agent-cli.ts --panels
+ *   npx ts-node agent-cli.ts --no-panels
  *   npx ts-node agent-cli.ts --no-stream
  *   npx ts-node agent-cli.ts --reset-prefs
  *   npx ts-node agent-cli.ts --mcp --mcp-config ./.ssenrah/mcp.servers.json
@@ -51,7 +54,7 @@ const DEFAULT_PANE_WEIGHTS: PaneWeights = {
   events: 3,
 };
 
-const CLI_PREFS_VERSION = 1;
+const CLI_PREFS_VERSION = 2;
 const CLI_PREFS_PATH = path.join(
   os.homedir(),
   ".ssenrah",
@@ -89,6 +92,7 @@ function printBanner(
   overseer: boolean,
   layoutEnabled: boolean,
   layoutStyle: LayoutRenderStyle,
+  panelsEnabled: boolean,
   mcpEnabled: boolean
 ): void {
   const title = `${paint("ssenrah", "bold")} ${paint("interactive agent", "dim")}`;
@@ -102,16 +106,17 @@ function printBanner(
       layoutStyle,
       layoutStyle === "diff" ? "green" : "yellow"
     )})`,
+    `panels=${panelsEnabled ? paint("on", "green") : paint("off", "yellow")}`,
   ].join("  ");
 
   console.log("\n" + paint("═".repeat(78), "dim"));
   console.log(`  ${title}`);
   console.log(`  ${status}`);
   console.log(
-    `  ${paint("Commands:", "magenta")} /help  /stream on|off  /layout on|off  /layout style full|diff  /panels on|off  /pane ...  /prefs ...  /clear  /exit`
+    `  ${paint("Commands:", "magenta")} /help  /stream on|off  /layout on|off  /layout style full|diff  /panels on|off  /pane ...  /prefs ...  /send  /cancel  /clear  /exit`
   );
   console.log(
-    `  ${paint("Shortcuts:", "magenta")} Ctrl+L clear  Ctrl+G stream  Ctrl+O layout  Ctrl+B panels`
+    `  ${paint("Shortcuts:", "magenta")} Ctrl+L clear  Ctrl+G stream  Ctrl+O layout  Ctrl+B panels  Ctrl+J newline`
   );
   console.log(paint("═".repeat(78), "dim") + "\n");
 }
@@ -131,14 +136,22 @@ function printHelp(): void {
   console.log("  /prefs load     Reload preferences from disk");
   console.log("  /prefs reset    Reset + save default preferences");
   console.log("  /prefs autosave on|off  Toggle auto-save on setting changes");
+  console.log("  /send           Submit current multiline draft");
+  console.log("  /cancel         Discard current multiline draft");
   console.log("  /clear          Clear screen");
   console.log("  /exit           Exit CLI");
+  console.log("");
+  console.log("Multiline input:");
+  console.log("  End a line with \\ then press Enter to continue composing");
+  console.log("  Press Ctrl+J to force a newline while composing");
+  console.log("  Submit with Enter on a normal line (or /send), cancel with /cancel");
   console.log("");
   console.log("Keyboard shortcuts:");
   console.log("  Ctrl+L clear screen");
   console.log("  Ctrl+G toggle streaming");
   console.log("  Ctrl+O toggle live layout");
   console.log("  Ctrl+B toggle dashboard panels");
+  console.log("  Ctrl+J insert newline");
 }
 
 function terminalWidth(): number {
@@ -285,6 +298,16 @@ function printTurnDashboard(
 
 function clearScreen(): void {
   process.stdout.write("\x1b[2J\x1b[H");
+}
+
+function hasContinuationMarker(input: string): boolean {
+  return input.replace(/\s+$/, "").endsWith("\\");
+}
+
+function stripContinuationMarker(input: string): string {
+  const rightTrimmed = input.replace(/\s+$/, "");
+  if (!rightTrimmed.endsWith("\\")) return input;
+  return rightTrimmed.slice(0, -1);
 }
 
 function wrapText(text: string, width: number, maxLines: number): string[] {
@@ -470,24 +493,33 @@ function loadCliPreferences(): CliPreferences | null {
     if (!fs.existsSync(CLI_PREFS_PATH)) return null;
     const raw = fs.readFileSync(CLI_PREFS_PATH, "utf8");
     const parsed = JSON.parse(raw) as Partial<CliPreferences>;
-    const paneWeights = sanitizePaneWeights(parsed.paneWeights);
-    const layoutStyle = sanitizeLayoutStyle(parsed.layoutStyle ?? "full");
-    if (!paneWeights) return null;
-    if (!layoutStyle) return null;
-    if (
-      typeof parsed.streamEnabled !== "boolean" ||
-      typeof parsed.layoutEnabled !== "boolean" ||
-      typeof parsed.panelsEnabled !== "boolean"
-    ) {
-      return null;
-    }
+    const paneWeights = sanitizePaneWeights(parsed.paneWeights) ?? cloneDefaultPaneWeights();
+    const layoutStyle = sanitizeLayoutStyle(parsed.layoutStyle ?? "full") ?? "full";
+    const parsedVersion = Math.max(
+      1,
+      Math.floor(typeof parsed.version === "number" ? parsed.version : 1)
+    );
+    const streamEnabled =
+      typeof parsed.streamEnabled === "boolean" ? parsed.streamEnabled : true;
+    const layoutEnabled =
+      parsedVersion < CLI_PREFS_VERSION
+        ? false
+        : typeof parsed.layoutEnabled === "boolean"
+        ? parsed.layoutEnabled
+        : false;
+    const panelsEnabled =
+      parsedVersion < CLI_PREFS_VERSION
+        ? false
+        : typeof parsed.panelsEnabled === "boolean"
+        ? parsed.panelsEnabled
+        : false;
+
     return {
-      version:
-        typeof parsed.version === "number" ? parsed.version : CLI_PREFS_VERSION,
-      streamEnabled: parsed.streamEnabled,
-      layoutEnabled: parsed.layoutEnabled,
+      version: CLI_PREFS_VERSION,
+      streamEnabled,
+      layoutEnabled,
       layoutStyle,
-      panelsEnabled: parsed.panelsEnabled,
+      panelsEnabled,
       paneWeights,
     };
   } catch {
@@ -697,6 +729,7 @@ function parseArgs(): {
   overseer: boolean;
   stream?: boolean;
   layout?: boolean;
+  panels?: boolean;
   layoutStyle?: LayoutRenderStyle;
   mcpEnabled: boolean;
   mcpConfigPath?: string;
@@ -708,6 +741,7 @@ function parseArgs(): {
   let overseer = false;
   let stream: boolean | undefined;
   let layout: boolean | undefined;
+  let panels: boolean | undefined;
   let layoutStyle: LayoutRenderStyle | undefined;
   let mcpEnabled = false;
   let mcpConfigPath: string | undefined;
@@ -736,6 +770,10 @@ function parseArgs(): {
       layout = true;
     } else if (args[i] === "--no-layout") {
       layout = false;
+    } else if (args[i] === "--panels") {
+      panels = true;
+    } else if (args[i] === "--no-panels") {
+      panels = false;
     } else if (args[i] === "--layout-style" && args[i + 1]) {
       const style = sanitizeLayoutStyle(args[i + 1]);
       if (!style) {
@@ -767,6 +805,7 @@ function parseArgs(): {
     overseer,
     stream,
     layout,
+    panels,
     layoutStyle,
     mcpEnabled,
     mcpConfigPath,
@@ -781,6 +820,7 @@ async function main() {
     overseer,
     stream,
     layout,
+    panels,
     layoutStyle,
     mcpEnabled,
     mcpConfigPath,
@@ -788,9 +828,9 @@ async function main() {
   } = parseArgs();
   const loadedPrefs = resetPrefs ? null : loadCliPreferences();
   let streamEnabled = stream ?? loadedPrefs?.streamEnabled ?? true;
-  let layoutEnabled = layout ?? loadedPrefs?.layoutEnabled ?? true;
+  let layoutEnabled = layout ?? loadedPrefs?.layoutEnabled ?? false;
   let liveLayoutStyle = layoutStyle ?? loadedPrefs?.layoutStyle ?? "full";
-  let panelsEnabled = loadedPrefs?.panelsEnabled ?? true;
+  let panelsEnabled = panels ?? loadedPrefs?.panelsEnabled ?? false;
   let paneWeights = loadedPrefs?.paneWeights ?? cloneDefaultPaneWeights();
   let autoSavePrefs = true;
 
@@ -852,6 +892,15 @@ Work step by step and explain what you are doing.`,
     input: process.stdin,
     output: process.stdout,
   });
+  let busy = false;
+  const draftLines: string[] = [];
+  let forceContinuationLine = false;
+
+  const refreshPrompt = (): void => {
+    rl.setPrompt(
+      draftLines.length > 0 ? paint("...> ", "magenta") : paint("you> ", "green")
+    );
+  };
 
   const persistCliPrefs = (reason: string): void => {
     if (!autoSavePrefs) return;
@@ -883,8 +932,10 @@ Work step by step and explain what you are doing.`,
       overseer,
       layoutEnabled,
       liveLayoutStyle,
+      panelsEnabled,
       mcpEnabled
     );
+    refreshPrompt();
     rl.prompt();
   };
 
@@ -1017,9 +1068,9 @@ Work step by step and explain what you are doing.`,
 
     if (action === "reset") {
       streamEnabled = true;
-      layoutEnabled = true;
+      layoutEnabled = false;
       liveLayoutStyle = "full";
-      panelsEnabled = true;
+      panelsEnabled = false;
       paneWeights = cloneDefaultPaneWeights();
       const ok = saveCliPreferences(
         buildCliPreferences({
@@ -1070,6 +1121,10 @@ Work step by step and explain what you are doing.`,
   if (process.stdin.isTTY) {
     process.stdin.on("keypress", (_str, key: readline.Key) => {
       if (!key?.ctrl) return;
+      if (key.name === "j") {
+        forceContinuationLine = true;
+        return;
+      }
       if (key.name === "l") {
         redrawShell();
       } else if (key.name === "g") {
@@ -1079,6 +1134,7 @@ Work step by step and explain what you are doing.`,
           streamEnabled
         );
         persistCliPrefs("shortcut stream toggle");
+        refreshPrompt();
         rl.prompt();
       } else if (key.name === "o") {
         layoutEnabled = !layoutEnabled;
@@ -1089,6 +1145,7 @@ Work step by step and explain what you are doing.`,
           layoutEnabled
         );
         persistCliPrefs("shortcut layout toggle");
+        refreshPrompt();
         rl.prompt();
       } else if (key.name === "b") {
         panelsEnabled = !panelsEnabled;
@@ -1099,6 +1156,7 @@ Work step by step and explain what you are doing.`,
           panelsEnabled
         );
         persistCliPrefs("shortcut panels toggle");
+        refreshPrompt();
         rl.prompt();
       }
     });
@@ -1130,8 +1188,7 @@ Work step by step and explain what you are doing.`,
     );
   }
 
-  let busy = false;
-  rl.setPrompt(paint("you> ", "green"));
+  refreshPrompt();
   printBanner(
     providerType,
     model,
@@ -1139,6 +1196,7 @@ Work step by step and explain what you are doing.`,
     overseer,
     layoutEnabled,
     liveLayoutStyle,
+    panelsEnabled,
     mcpEnabled
   );
   rl.prompt();
@@ -1150,18 +1208,19 @@ Work step by step and explain what you are doing.`,
     }
   });
 
-  rl.on("line", async (input) => {
-    const trimmed = input.trim();
+  const runPrompt = async (userPrompt: string): Promise<void> => {
+    const trimmed = userPrompt.trim();
     if (!trimmed) {
+      refreshPrompt();
       rl.prompt();
       return;
     }
-    if (busy) {
-      console.log(paint("Agent is still processing the previous request.", "yellow"));
+    if (trimmed === "/send" || trimmed === "/cancel") {
+      console.log(paint("No active multiline draft.", "yellow"));
+      refreshPrompt();
       rl.prompt();
       return;
     }
-
     if (trimmed === "/exit" || trimmed.toLowerCase() === "exit") {
       persistCliPrefs("exit command");
       if (mcpRuntime) {
@@ -1177,6 +1236,7 @@ Work step by step and explain what you are doing.`,
     }
     if (trimmed === "/help") {
       printHelp();
+      refreshPrompt();
       rl.prompt();
       return;
     }
@@ -1188,6 +1248,7 @@ Work step by step and explain what you are doing.`,
       streamEnabled = trimmed.endsWith("on");
       logToggle(`Streaming ${streamEnabled ? "enabled" : "disabled"}.`, streamEnabled);
       persistCliPrefs("stream command");
+      refreshPrompt();
       rl.prompt();
       return;
     }
@@ -1198,6 +1259,7 @@ Work step by step and explain what you are doing.`,
         liveLayoutStyle === "diff"
       );
       persistCliPrefs("layout style command");
+      refreshPrompt();
       rl.prompt();
       return;
     }
@@ -1208,6 +1270,7 @@ Work step by step and explain what you are doing.`,
         layoutEnabled
       );
       persistCliPrefs("layout command");
+      refreshPrompt();
       rl.prompt();
       return;
     }
@@ -1215,14 +1278,17 @@ Work step by step and explain what you are doing.`,
       panelsEnabled = trimmed.endsWith("on");
       logToggle(`Panels ${panelsEnabled ? "enabled" : "disabled"}.`, panelsEnabled);
       persistCliPrefs("panels command");
+      refreshPrompt();
       rl.prompt();
       return;
     }
     if (handlePaneCommand(trimmed)) {
+      refreshPrompt();
       rl.prompt();
       return;
     }
     if (handlePrefsCommand(trimmed)) {
+      refreshPrompt();
       rl.prompt();
       return;
     }
@@ -1252,7 +1318,7 @@ Work step by step and explain what you are doing.`,
             elapsedMs: Date.now() - startedAt,
             tokensIn: 0,
             tokensOut: 0,
-            userPrompt: trimmed,
+            userPrompt,
             assistantText: assistantStreamText,
             events: currentEvents,
             toolsUsed: [],
@@ -1262,7 +1328,7 @@ Work step by step and explain what you are doing.`,
       } else {
         stopSpinner = startSpinner("thinking…");
       }
-      const result = await agent.run(trimmed, {
+      const result = await agent.run(userPrompt, {
         stream: streamEnabled,
         onTextDelta: (delta) => {
           if (!streamEnabled) return;
@@ -1301,7 +1367,7 @@ Work step by step and explain what you are doing.`,
           elapsedMs,
           tokensIn: result.usage.inputTokens,
           tokensOut: result.usage.outputTokens,
-          userPrompt: trimmed,
+          userPrompt,
           assistantText: assistantStreamText,
           events: turnEvents,
           toolsUsed: result.toolsUsed,
@@ -1344,8 +1410,74 @@ Work step by step and explain what you are doing.`,
       console.error(`\n${paint("Error:", "yellow")} ${(err as Error).message}\n`);
     } finally {
       busy = false;
+      refreshPrompt();
       rl.prompt();
     }
+  };
+
+  rl.on("line", async (input) => {
+    const forcedContinuation = forceContinuationLine;
+    forceContinuationLine = false;
+
+    if (busy) {
+      console.log(paint("Agent is still processing the previous request.", "yellow"));
+      refreshPrompt();
+      rl.prompt();
+      return;
+    }
+
+    if (draftLines.length > 0) {
+      const trimmed = input.trim();
+      if (trimmed === "/cancel") {
+        draftLines.length = 0;
+        console.log(paint("Multiline draft discarded.", "yellow"));
+        refreshPrompt();
+        rl.prompt();
+        return;
+      }
+      if (trimmed === "/send") {
+        const composed = draftLines.join("\n");
+        draftLines.length = 0;
+        refreshPrompt();
+        await runPrompt(composed);
+        return;
+      }
+
+      const continued = forcedContinuation || hasContinuationMarker(input);
+      draftLines.push(continued ? stripContinuationMarker(input) : input);
+      if (continued) {
+        refreshPrompt();
+        rl.prompt();
+        return;
+      }
+
+      const composed = draftLines.join("\n");
+      draftLines.length = 0;
+      refreshPrompt();
+      await runPrompt(composed);
+      return;
+    }
+
+    if (forcedContinuation || hasContinuationMarker(input)) {
+      draftLines.push(stripContinuationMarker(input));
+      console.log(
+        paint(
+          "Multiline compose enabled. Continue with \\ + Enter or Ctrl+J. Submit with Enter or /send. Cancel with /cancel.",
+          "dim"
+        )
+      );
+      refreshPrompt();
+      rl.prompt();
+      return;
+    }
+
+    if (!input.trim()) {
+      refreshPrompt();
+      rl.prompt();
+      return;
+    }
+
+    await runPrompt(input);
   });
 }
 
