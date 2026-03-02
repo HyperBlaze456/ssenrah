@@ -2,6 +2,7 @@ import { useUiStore } from "@/lib/store/ui";
 import { useProjectStore } from "@/lib/store/project";
 import { PANELS, type ConfigScope } from "@/types";
 import { ScopeBadge } from "../shared/ScopeBadge";
+import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import * as Icons from "lucide-react";
 import { PanelLeft } from "lucide-react";
@@ -33,75 +34,104 @@ export function Sidebar() {
   return (
     <aside
       className={cn(
-        "flex flex-col border-r border-border bg-card transition-all duration-200",
-        collapsed ? "w-12" : "w-60"
+        "flex flex-col border-r border-sidebar-border bg-sidebar transition-all duration-200",
+        collapsed ? "w-14" : "w-60"
       )}
     >
       {/* Collapse toggle */}
-      <button
-        onClick={toggleSidebar}
-        className="flex h-8 items-center justify-center hover:bg-accent"
-      >
-        <PanelLeft className={cn("h-4 w-4 text-muted-foreground transition-transform", collapsed && "rotate-180")} />
-      </button>
+      <div className="flex items-center border-b border-sidebar-border px-2 py-2">
+        <Tooltip content={collapsed ? "Expand sidebar" : "Collapse sidebar"} side="right">
+          <button
+            onClick={toggleSidebar}
+            className="flex h-7 w-7 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors"
+          >
+            <PanelLeft className={cn("h-4 w-4 transition-transform", collapsed && "rotate-180")} />
+          </button>
+        </Tooltip>
+        {!collapsed && (
+          <span className="ml-2 text-xs font-medium text-sidebar-foreground/50 uppercase tracking-wider">
+            Navigation
+          </span>
+        )}
+      </div>
 
       {/* Scope selector */}
-      {!collapsed && (
-        <div className="border-b border-border px-3 pb-3">
-          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">Scope</p>
-          <div className="flex flex-col gap-1">
-            {SCOPE_OPTIONS.map((opt) => {
-              const disabled =
-                (opt.value === "project" || opt.value === "local") && !hasProject;
+      <div className={cn("border-b border-sidebar-border", collapsed ? "px-1.5 py-2" : "px-3 py-3")}>
+        {!collapsed && (
+          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-sidebar-foreground/50">Scope</p>
+        )}
+        <div className={cn("flex gap-1", collapsed ? "flex-col items-center" : "flex-col")}>
+          {SCOPE_OPTIONS.map((opt) => {
+            const disabled =
+              (opt.value === "project" || opt.value === "local") && !hasProject;
+            const btn = (
+              <button
+                key={opt.value}
+                onClick={() => !disabled && setScope(opt.value)}
+                disabled={disabled}
+                className={cn(
+                  "flex items-center gap-2 rounded-md text-sm transition-colors",
+                  collapsed ? "justify-center px-1.5 py-1" : "px-2 py-1",
+                  activeScope === opt.value
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                    : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground",
+                  disabled && "cursor-not-allowed opacity-30"
+                )}
+              >
+                <ScopeBadge scope={opt.value} />
+                {!collapsed && opt.label}
+              </button>
+            );
+            if (collapsed) {
               return (
-                <button
-                  key={opt.value}
-                  onClick={() => !disabled && setScope(opt.value)}
-                  disabled={disabled}
-                  className={cn(
-                    "flex items-center gap-2 rounded px-2 py-1 text-sm transition-colors",
-                    activeScope === opt.value
-                      ? "bg-accent text-accent-foreground"
-                      : "text-muted-foreground hover:bg-accent/50",
-                    disabled && "cursor-not-allowed opacity-40"
-                  )}
-                >
-                  <ScopeBadge scope={opt.value} />
-                  {opt.label}
-                </button>
+                <Tooltip key={opt.value} content={`${opt.label}${disabled ? " (no project)" : ""}`} side="right">
+                  {btn}
+                </Tooltip>
               );
-            })}
-          </div>
+            }
+            return btn;
+          })}
         </div>
-      )}
+      </div>
 
       {/* Panel navigation */}
-      <nav className="flex-1 overflow-y-auto px-1 py-2">
+      <nav className={cn("flex-1 overflow-y-auto py-2", collapsed ? "px-1.5" : "px-2")}>
         {!collapsed && (
-          <p className="mb-2 px-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">Panels</p>
+          <p className="mb-2 px-2 text-xs font-medium uppercase tracking-wider text-sidebar-foreground/50">Panels</p>
         )}
-        {PANELS.map((panel) => {
-          const Icon = getPanelIcon(panel.icon);
-          const isActive = activePanel === panel.id;
-          const scopeAvailable = panel.id === "effective" || panel.scopes.includes(activeScope);
-          return (
-            <button
-              key={panel.id}
-              onClick={() => setPanel(panel.id)}
-              className={cn(
-                "flex w-full items-center gap-2 rounded px-2 py-1.5 text-sm transition-colors",
-                isActive
-                  ? "bg-primary text-primary-foreground"
-                  : "text-foreground hover:bg-accent",
-                !scopeAvailable && "opacity-40"
-              )}
-              title={collapsed ? panel.label : undefined}
-            >
-              <Icon className="h-4 w-4 shrink-0" />
-              {!collapsed && <span>{panel.label}</span>}
-            </button>
-          );
-        })}
+        <div className="flex flex-col gap-0.5">
+          {PANELS.map((panel) => {
+            const Icon = getPanelIcon(panel.icon);
+            const isActive = activePanel === panel.id;
+            const scopeAvailable = panel.id === "effective" || panel.scopes.includes(activeScope);
+            const btn = (
+              <button
+                key={panel.id}
+                onClick={() => scopeAvailable && setPanel(panel.id)}
+                disabled={!scopeAvailable}
+                className={cn(
+                  "flex w-full items-center rounded-md text-sm transition-colors",
+                  collapsed ? "justify-center px-2 py-2" : "gap-2 px-2 py-1.5",
+                  isActive
+                    ? "bg-sidebar-primary text-sidebar-primary-foreground"
+                    : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                  !scopeAvailable && "opacity-30 cursor-not-allowed hover:bg-transparent"
+                )}
+              >
+                <Icon className={cn("shrink-0", collapsed ? "h-[18px] w-[18px]" : "h-4 w-4")} />
+                {!collapsed && <span>{panel.label}</span>}
+              </button>
+            );
+            if (collapsed) {
+              return (
+                <Tooltip key={panel.id} content={`${panel.label}${!scopeAvailable ? " (not available)" : ""}`} side="right">
+                  {btn}
+                </Tooltip>
+              );
+            }
+            return btn;
+          })}
+        </div>
       </nav>
     </aside>
   );

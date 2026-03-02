@@ -8,8 +8,8 @@ export const HookDefinitionSchema = z.object({
   timeout: z.number().positive().optional(),
 }).refine(
   (h) => {
-    if (h.type === "command") return !!h.command;
-    if (h.type === "prompt") return !!h.prompt;
+    if (h.type === "command") return h.command != null;
+    if (h.type === "prompt") return h.prompt != null;
     return true;
   },
   { message: "command hooks require 'command', prompt hooks require 'prompt'" }
