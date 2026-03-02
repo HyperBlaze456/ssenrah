@@ -124,7 +124,7 @@ export function SkillEditor({ scope, directory, onClose }: SkillEditorProps) {
             <p className="text-xs text-destructive">{errors.name}</p>
           )}
           <p className="text-xs text-muted-foreground">
-            Display name for the skill (used as /command name).
+            Unique identifier. Users invoke this skill with <code className="text-[11px] bg-muted px-1 rounded">/{"{name}"}</code> in Claude Code.
           </p>
         </div>
 
@@ -153,7 +153,7 @@ export function SkillEditor({ scope, directory, onClose }: SkillEditorProps) {
             className="font-mono text-sm"
           />
           <p className="text-xs text-muted-foreground">
-            Hint shown after the slash command name.
+            Placeholder shown after the command, e.g. <code className="text-[11px] bg-muted px-1 rounded">/name &lt;file-path&gt;</code>
           </p>
         </div>
 
@@ -217,7 +217,7 @@ export function SkillEditor({ scope, directory, onClose }: SkillEditorProps) {
           <div>
             <Label>Disable Model Invocation</Label>
             <p className="text-xs text-muted-foreground">
-              Prevent the model from invoking this skill directly.
+              Block the AI model from triggering this skill on its own.
             </p>
           </div>
           <Switch
@@ -231,7 +231,7 @@ export function SkillEditor({ scope, directory, onClose }: SkillEditorProps) {
           <div>
             <Label>User Invocable</Label>
             <p className="text-xs text-muted-foreground">
-              Allow users to invoke this skill via slash command.
+              Show this skill in the slash command menu so users can run it directly.
             </p>
           </div>
           <Switch
