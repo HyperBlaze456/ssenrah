@@ -1,6 +1,6 @@
 import type { ToolDefinition } from "../agent/types";
 import type { LLMProvider } from "../providers/types";
-import type { PolicyProfile } from "../harness/policy-engine";
+import type { PolicyProfile, RiskLevel } from "../harness/policy-engine";
 import type { AgentTypeRegistry } from "../agents/registry";
 import type { StaticToolRegistry } from "./registry";
 import { Agent } from "../agent/agent";
@@ -45,6 +45,8 @@ export interface SpawnAgentToolDeps {
   parentPolicyProfile?: PolicyProfile;
   /** AbortSignal from parent — inherited by child for cancellation. */
   parentSignal?: AbortSignal;
+  /** Optional per-tool risk overrides inherited by child agents. */
+  toolRiskOverrides?: Record<string, RiskLevel>;
 }
 
 /**
@@ -62,6 +64,7 @@ export function createSpawnAgentTool(deps: SpawnAgentToolDeps): ToolDefinition {
     currentDepth = 0,
     parentPolicyProfile,
     parentSignal,
+    toolRiskOverrides,
   } = deps;
 
   return {
@@ -141,6 +144,7 @@ export function createSpawnAgentTool(deps: SpawnAgentToolDeps): ToolDefinition {
           currentDepth: currentDepth + 1,
           parentPolicyProfile: effectivePolicy,
           parentSignal,
+          toolRiskOverrides,
         });
         childTools.push(childSpawnTool);
       }
@@ -154,9 +158,10 @@ export function createSpawnAgentTool(deps: SpawnAgentToolDeps): ToolDefinition {
         maxTurns: agentType.maxTurns ?? 10,
         systemPrompt: agentType.systemPrompt,
         tools: childTools,
-        intentRequired: agentType.intentRequired ?? true,
+        intentRequired: agentType.intentRequired ?? false,
         policyProfile: effectivePolicy,
         signal: parentSignal,
+        toolRiskOverrides,
         sessionId: parentSessionId
           ? `${parentSessionId}-child-${Date.now()}`
           : undefined,

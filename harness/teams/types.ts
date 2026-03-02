@@ -75,6 +75,10 @@ export interface TeamConfig {
    * The orchestrator verifies work before completing. Default: false.
    */
   verifyBeforeComplete?: boolean;
+  /** Enable MCP server runtime for worker tool packs. Default: false. */
+  mcpEnabled?: boolean;
+  /** Path to MCP server config file. Default: ".ssenrah/mcp.servers.json". */
+  mcpConfigPath?: string;
 }
 
 /**

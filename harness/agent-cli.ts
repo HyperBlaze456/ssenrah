@@ -9,8 +9,10 @@
  *   npx ts-node agent-cli.ts --provider openai --model gpt-4o
  *   npx ts-node agent-cli.ts --overseer
  *   npx ts-node agent-cli.ts --no-layout
+ *   npx ts-node agent-cli.ts --layout-style diff
  *   npx ts-node agent-cli.ts --no-stream
  *   npx ts-node agent-cli.ts --reset-prefs
+ *   npx ts-node agent-cli.ts --mcp --mcp-config ./.ssenrah/mcp.servers.json
  *   npm run agent
  */
 import "dotenv/config";
@@ -24,11 +26,21 @@ import { LLMProvider } from "./providers/types";
 import { Beholder } from "./harness/beholder";
 import { HarnessEvent, summarizeHarnessEventTypes } from "./harness/events";
 import { buildRiskStatusLines } from "./harness/risk-status";
+import {
+  DEFAULT_MCP_CONFIG_PATH,
+  loadMcpHarnessConfig,
+} from "./harness/mcp-config";
+import { McpRuntime } from "./harness/mcp-runtime";
+import {
+  createStdioMcpClientFactory,
+  toMcpRuntimeConfig,
+} from "./harness/mcp-adapter";
 import { createDefaultToolRegistry } from "./tools/registry";
 
 type PaneName = "status" | "prompt" | "assistant" | "tasks" | "tools" | "events";
 
 type PaneWeights = Record<PaneName, number>;
+type LayoutRenderStyle = "full" | "diff";
 
 const DEFAULT_PANE_WEIGHTS: PaneWeights = {
   status: 2,
@@ -50,6 +62,7 @@ interface CliPreferences {
   version: number;
   streamEnabled: boolean;
   layoutEnabled: boolean;
+  layoutStyle: LayoutRenderStyle;
   panelsEnabled: boolean;
   paneWeights: PaneWeights;
 }
@@ -74,7 +87,9 @@ function printBanner(
   model: string,
   streamEnabled: boolean,
   overseer: boolean,
-  layoutEnabled: boolean
+  layoutEnabled: boolean,
+  layoutStyle: LayoutRenderStyle,
+  mcpEnabled: boolean
 ): void {
   const title = `${paint("ssenrah", "bold")} ${paint("interactive agent", "dim")}`;
   const status = [
@@ -82,14 +97,18 @@ function printBanner(
     `model=${paint(model, "cyan")}`,
     `stream=${streamEnabled ? paint("on", "green") : paint("off", "yellow")}`,
     `overseer=${overseer ? paint("on", "green") : paint("off", "yellow")}`,
-    `layout=${layoutEnabled ? paint("on", "green") : paint("off", "yellow")}`,
+    `mcp=${mcpEnabled ? paint("on", "green") : paint("off", "yellow")}`,
+    `layout=${layoutEnabled ? paint("on", "green") : paint("off", "yellow")}(${paint(
+      layoutStyle,
+      layoutStyle === "diff" ? "green" : "yellow"
+    )})`,
   ].join("  ");
 
   console.log("\n" + paint("═".repeat(78), "dim"));
   console.log(`  ${title}`);
   console.log(`  ${status}`);
   console.log(
-    `  ${paint("Commands:", "magenta")} /help  /stream on|off  /layout on|off  /panels on|off  /pane ...  /prefs ...  /clear  /exit`
+    `  ${paint("Commands:", "magenta")} /help  /stream on|off  /layout on|off  /layout style full|diff  /panels on|off  /pane ...  /prefs ...  /clear  /exit`
   );
   console.log(
     `  ${paint("Shortcuts:", "magenta")} Ctrl+L clear  Ctrl+G stream  Ctrl+O layout  Ctrl+B panels`
@@ -102,6 +121,7 @@ function printHelp(): void {
   console.log("  /help           Show this help");
   console.log("  /stream on|off  Toggle streaming output");
   console.log("  /layout on|off  Toggle split-pane live layout");
+  console.log("  /layout style full|diff  Set live layout render style");
   console.log("  /panels on|off  Toggle dashboard panels");
   console.log("  /pane list      Show pane weights and computed heights");
   console.log("  /pane reset     Reset pane weights");
@@ -217,13 +237,24 @@ function summarizeEventLines(events: HarnessEvent[]): string[] {
 
 function summarizeTaskLines(events: HarnessEvent[]): string[] {
   const intents = events.filter((event) => event.type === "intent");
-  if (intents.length === 0) return ["No declared intent blocks in this turn."];
+  if (intents.length > 0) {
+    return intents.map((intent, idx) => {
+      const toolName = toSafeString(intent.data["toolName"]) || "unknown_tool";
+      const purpose = toSafeString(intent.data["purpose"]) || "no purpose provided";
+      const risk = (toSafeString(intent.data["riskLevel"]) || "read").toUpperCase();
+      return `${idx + 1}. [${risk}] ${toolName} -> ${purpose}`;
+    });
+  }
 
-  return intents.map((intent, idx) => {
-    const toolName = toSafeString(intent.data["toolName"]) || "unknown_tool";
-    const purpose = toSafeString(intent.data["purpose"]) || "no purpose provided";
-    const risk = (toSafeString(intent.data["riskLevel"]) || "read").toUpperCase();
-    return `${idx + 1}. [${risk}] ${toolName} → ${purpose}`;
+  const policies = events.filter((event) => event.type === "policy");
+  if (policies.length === 0) return ["No planning/policy signals in this turn."];
+
+  return policies.map((policy, idx) => {
+    const toolName = toSafeString(policy.data["tool"]) || "unknown_tool";
+    const risk = (toSafeString(policy.data["riskLevel"]) || "unknown").toUpperCase();
+    const action = toSafeString(policy.data["action"]) || "unknown";
+    const reason = toSafeString(policy.data["reason"]);
+    return `${idx + 1}. [${risk}] ${toolName} -> ${action}${reason ? ` (${reason})` : ""}`;
   });
 }
 
@@ -242,7 +273,7 @@ function printTurnDashboard(
     ],
     "dim"
   );
-  const taskPanel = renderPanel("Tasks / Intents", summarizeTaskLines(events), "magenta");
+  const taskPanel = renderPanel("Tasks / Planning", summarizeTaskLines(events), "magenta");
   const toolsPanel = renderPanel("Tool Execution", summarizeToolLines(events), "cyan");
   const eventsPanel = renderPanel("Event Log", summarizeEventLines(events), "yellow");
 
@@ -299,8 +330,9 @@ function cloneDefaultPaneWeights(): PaneWeights {
 
 function computePaneLineBudgets(weights: PaneWeights): Record<PaneName, number> {
   const terminalRows = process.stdout.rows ?? 44;
-  const reservedRows = 12; // header + spacing + prompt room
-  const available = Math.max(20, terminalRows - reservedRows);
+  // 2 rows for heading text + 6 panels x 2 border rows + prompt room.
+  const reservedRows = 14;
+  const available = Math.max(6, terminalRows - reservedRows);
 
   const mins: Record<PaneName, number> = {
     status: 2,
@@ -315,6 +347,33 @@ function computePaneLineBudgets(weights: PaneWeights): Record<PaneName, number> 
     (sum, name) => sum + mins[name],
     0
   );
+
+  if (minTotal > available) {
+    const shrunk: Record<PaneName, number> = { ...mins };
+    let overflow = minTotal - available;
+    const shrinkOrder: PaneName[] = [
+      "assistant",
+      "events",
+      "tools",
+      "tasks",
+      "prompt",
+      "status",
+    ];
+    while (overflow > 0) {
+      let reducedThisPass = false;
+      for (const name of shrinkOrder) {
+        if (overflow <= 0) break;
+        if (shrunk[name] > 1) {
+          shrunk[name] -= 1;
+          overflow -= 1;
+          reducedThisPass = true;
+        }
+      }
+      if (!reducedThisPass) break;
+    }
+    return shrunk;
+  }
+
   const extra = Math.max(0, available - minTotal);
   const weightTotal = Math.max(
     1,
@@ -387,6 +446,11 @@ function isPaneName(value: string): value is PaneName {
   );
 }
 
+function sanitizeLayoutStyle(input: unknown): LayoutRenderStyle | null {
+  if (input === "full" || input === "diff") return input;
+  return null;
+}
+
 function sanitizePaneWeights(input: unknown): PaneWeights | null {
   if (typeof input !== "object" || input === null) return null;
   const candidate = input as Record<string, unknown>;
@@ -407,7 +471,9 @@ function loadCliPreferences(): CliPreferences | null {
     const raw = fs.readFileSync(CLI_PREFS_PATH, "utf8");
     const parsed = JSON.parse(raw) as Partial<CliPreferences>;
     const paneWeights = sanitizePaneWeights(parsed.paneWeights);
+    const layoutStyle = sanitizeLayoutStyle(parsed.layoutStyle ?? "full");
     if (!paneWeights) return null;
+    if (!layoutStyle) return null;
     if (
       typeof parsed.streamEnabled !== "boolean" ||
       typeof parsed.layoutEnabled !== "boolean" ||
@@ -420,6 +486,7 @@ function loadCliPreferences(): CliPreferences | null {
         typeof parsed.version === "number" ? parsed.version : CLI_PREFS_VERSION,
       streamEnabled: parsed.streamEnabled,
       layoutEnabled: parsed.layoutEnabled,
+      layoutStyle,
       panelsEnabled: parsed.panelsEnabled,
       paneWeights,
     };
@@ -441,6 +508,7 @@ function saveCliPreferences(prefs: CliPreferences): boolean {
 function buildCliPreferences(state: {
   streamEnabled: boolean;
   layoutEnabled: boolean;
+  layoutStyle: LayoutRenderStyle;
   panelsEnabled: boolean;
   paneWeights: PaneWeights;
 }): CliPreferences {
@@ -448,6 +516,7 @@ function buildCliPreferences(state: {
     version: CLI_PREFS_VERSION,
     streamEnabled: state.streamEnabled,
     layoutEnabled: state.layoutEnabled,
+    layoutStyle: state.layoutStyle,
     panelsEnabled: state.panelsEnabled,
     paneWeights: { ...state.paneWeights },
   };
@@ -473,7 +542,7 @@ interface LiveTurnSnapshot {
 
 const LIVE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-function renderLiveTurn(snapshot: LiveTurnSnapshot): void {
+function buildLiveTurnLines(snapshot: LiveTurnSnapshot): string[] {
   const width = terminalWidth();
   const budgets = computePaneLineBudgets(snapshot.paneWeights);
   const contentWidth = Math.max(10, width - 4);
@@ -533,27 +602,75 @@ function renderLiveTurn(snapshot: LiveTurnSnapshot): void {
     budgets.events
   );
 
-  clearScreen();
-  console.log(paint("ssenrah live layout", "bold"));
-  console.log(
+  return [
+    paint("ssenrah live layout", "bold"),
     paint(
-      "Type /layout off to disable live split-pane rendering (applies next turn).",
+      "Type /layout off to disable live split-pane rendering. Use /layout style full|diff to switch render mode.",
       "dim"
-    )
-  );
-  console.log(renderPanel("Status", statusPanelLines, "dim"));
-  console.log(renderPanel("User Prompt", promptLines, "magenta"));
-  console.log(renderPanel("Assistant Stream", assistantLines, "cyan"));
-  console.log(renderPanel("Intents / Tasks", taskLines, "magenta"));
-  console.log(renderPanel("Tool Execution", toolLines, "yellow"));
-  console.log(renderPanel("Event Log", eventLines, "dim"));
+    ),
+    ...renderPanel("Status", statusPanelLines, "dim").split("\n"),
+    ...renderPanel("User Prompt", promptLines, "magenta").split("\n"),
+    ...renderPanel("Assistant Stream", assistantLines, "cyan").split("\n"),
+    ...renderPanel("Intents / Tasks", taskLines, "magenta").split("\n"),
+    ...renderPanel("Tool Execution", toolLines, "yellow").split("\n"),
+    ...renderPanel("Event Log", eventLines, "dim").split("\n"),
+  ];
 }
 
-function startLiveRenderer(render: () => void): () => void {
+function renderLiveFrameFull(lines: string[]): void {
+  clearScreen();
+  process.stdout.write(lines.join("\n") + "\n");
+}
+
+function renderLiveTurn(snapshot: LiveTurnSnapshot): void {
+  renderLiveFrameFull(buildLiveTurnLines(snapshot));
+}
+
+function moveCursor(row: number, col: number): void {
+  process.stdout.write(`\x1b[${row};${col}H`);
+}
+
+function rewriteLine(row: number, text: string): void {
+  moveCursor(row, 1);
+  process.stdout.write("\x1b[2K");
+  if (text.length > 0) {
+    process.stdout.write(text);
+  }
+}
+
+function startLiveRenderer(renderLines: () => string[], style: LayoutRenderStyle): () => void {
   if (!process.stdout.isTTY) return () => undefined;
-  render();
-  const timer = setInterval(render, 120);
-  return () => clearInterval(timer);
+  if (style === "full") {
+    const render = () => renderLiveFrameFull(renderLines());
+    render();
+    const timer = setInterval(render, 120);
+    return () => clearInterval(timer);
+  }
+
+  let previousLines: string[] = [];
+  process.stdout.write("\x1b[?25l");
+
+  const paintDiff = () => {
+    const nextLines = renderLines();
+    const maxLines = Math.max(previousLines.length, nextLines.length);
+    for (let i = 0; i < maxLines; i++) {
+      const prev = previousLines[i] ?? "";
+      const next = nextLines[i] ?? "";
+      if (prev === next) continue;
+      rewriteLine(i + 1, next);
+    }
+    rewriteLine(nextLines.length + 1, "");
+    previousLines = nextLines;
+  };
+
+  clearScreen();
+  paintDiff();
+  const timer = setInterval(paintDiff, 120);
+  return () => {
+    clearInterval(timer);
+    process.stdout.write("\x1b[?25h");
+    rewriteLine(previousLines.length + 1, "");
+  };
 }
 
 function startSpinner(label: string): () => void {
@@ -580,6 +697,9 @@ function parseArgs(): {
   overseer: boolean;
   stream?: boolean;
   layout?: boolean;
+  layoutStyle?: LayoutRenderStyle;
+  mcpEnabled: boolean;
+  mcpConfigPath?: string;
   resetPrefs: boolean;
 } {
   const args = process.argv.slice(2);
@@ -588,6 +708,9 @@ function parseArgs(): {
   let overseer = false;
   let stream: boolean | undefined;
   let layout: boolean | undefined;
+  let layoutStyle: LayoutRenderStyle | undefined;
+  let mcpEnabled = false;
+  let mcpConfigPath: string | undefined;
   let resetPrefs = false;
 
   for (let i = 0; i < args.length; i++) {
@@ -613,6 +736,19 @@ function parseArgs(): {
       layout = true;
     } else if (args[i] === "--no-layout") {
       layout = false;
+    } else if (args[i] === "--layout-style" && args[i + 1]) {
+      const style = sanitizeLayoutStyle(args[i + 1]);
+      if (!style) {
+        console.error(`Unknown layout style: ${args[i + 1]}. Use full or diff.`);
+        process.exit(1);
+      }
+      layoutStyle = style;
+      i++;
+    } else if (args[i] === "--mcp") {
+      mcpEnabled = true;
+    } else if (args[i] === "--mcp-config" && args[i + 1]) {
+      mcpConfigPath = args[i + 1];
+      i++;
     } else if (args[i] === "--reset-prefs") {
       resetPrefs = true;
     }
@@ -625,27 +761,78 @@ function parseArgs(): {
     else model = "claude-sonnet-4-20250514";
   }
 
-  return { providerType, model, overseer, stream, layout, resetPrefs };
+  return {
+    providerType,
+    model,
+    overseer,
+    stream,
+    layout,
+    layoutStyle,
+    mcpEnabled,
+    mcpConfigPath,
+    resetPrefs,
+  };
 }
 
 async function main() {
-  const { providerType, model, overseer, stream, layout, resetPrefs } = parseArgs();
+  const {
+    providerType,
+    model,
+    overseer,
+    stream,
+    layout,
+    layoutStyle,
+    mcpEnabled,
+    mcpConfigPath,
+    resetPrefs,
+  } = parseArgs();
   const loadedPrefs = resetPrefs ? null : loadCliPreferences();
   let streamEnabled = stream ?? loadedPrefs?.streamEnabled ?? true;
   let layoutEnabled = layout ?? loadedPrefs?.layoutEnabled ?? true;
+  let liveLayoutStyle = layoutStyle ?? loadedPrefs?.layoutStyle ?? "full";
   let panelsEnabled = loadedPrefs?.panelsEnabled ?? true;
   let paneWeights = loadedPrefs?.paneWeights ?? cloneDefaultPaneWeights();
   let autoSavePrefs = true;
 
   const provider: LLMProvider = createProvider({ type: providerType, model });
   const toolRegistry = createDefaultToolRegistry();
+  let toolPacks: string[] = ["filesystem"];
+  let mcpRiskOverrides: Record<string, "read" | "write" | "exec" | "destructive"> = {};
+  let mcpRuntime: McpRuntime | undefined;
+
+  if (mcpEnabled) {
+    const configPath = mcpConfigPath ?? DEFAULT_MCP_CONFIG_PATH;
+    const resolvedConfig = loadMcpHarnessConfig(configPath);
+    mcpRuntime = new McpRuntime({
+      config: toMcpRuntimeConfig(resolvedConfig),
+      clientFactory: createStdioMcpClientFactory(),
+    });
+    await mcpRuntime.start();
+
+    const packDefinitions = await mcpRuntime.getPackDefinitions();
+    for (const [packName, tools] of Object.entries(packDefinitions)) {
+      if (tools && tools.length > 0) {
+        toolRegistry.registerPack(packName, tools);
+      }
+    }
+
+    if (packDefinitions["mcp"] && packDefinitions["mcp"]!.length > 0) {
+      toolPacks = [...toolPacks, "mcp"];
+    }
+    mcpRiskOverrides = await mcpRuntime.getRiskOverrides();
+    const diagnostics = await mcpRuntime.getDiagnostics();
+    console.log(
+      `[MCP enabled] servers=${diagnostics.length} config=${path.resolve(configPath)}`
+    );
+  }
 
   const agent = new Agent({
     provider,
     model,
     toolRegistry,
-    toolPacks: ["filesystem"],
-    intentRequired: true,
+    toolPacks,
+    intentRequired: false,
+    toolRiskOverrides: mcpRiskOverrides,
     systemPrompt: `You are a helpful agent with access to filesystem tools.
 You can read files, list directories, and edit files.
 Work step by step and explain what you are doing.`,
@@ -672,6 +859,7 @@ Work step by step and explain what you are doing.`,
       buildCliPreferences({
         streamEnabled,
         layoutEnabled,
+        layoutStyle: liveLayoutStyle,
         panelsEnabled,
         paneWeights,
       })
@@ -688,7 +876,15 @@ Work step by step and explain what you are doing.`,
 
   const redrawShell = (): void => {
     clearScreen();
-    printBanner(providerType, model, streamEnabled, overseer, layoutEnabled);
+    printBanner(
+      providerType,
+      model,
+      streamEnabled,
+      overseer,
+      layoutEnabled,
+      liveLayoutStyle,
+      mcpEnabled
+    );
     rl.prompt();
   };
 
@@ -764,7 +960,7 @@ Work step by step and explain what you are doing.`,
     if (action === "show") {
       console.log(
         paint(
-          `prefs path=${CLI_PREFS_PATH}\nstream=${streamEnabled} layout=${layoutEnabled} panels=${panelsEnabled} autosave=${autoSavePrefs}\n${formatPaneSummary(
+          `prefs path=${CLI_PREFS_PATH}\nstream=${streamEnabled} layout=${layoutEnabled} layoutStyle=${liveLayoutStyle} panels=${panelsEnabled} autosave=${autoSavePrefs}\n${formatPaneSummary(
             paneWeights
           )}`,
           "dim"
@@ -778,6 +974,7 @@ Work step by step and explain what you are doing.`,
         buildCliPreferences({
           streamEnabled,
           layoutEnabled,
+          layoutStyle: liveLayoutStyle,
           panelsEnabled,
           paneWeights,
         })
@@ -806,11 +1003,12 @@ Work step by step and explain what you are doing.`,
       }
       streamEnabled = loaded.streamEnabled;
       layoutEnabled = loaded.layoutEnabled;
+      liveLayoutStyle = loaded.layoutStyle;
       panelsEnabled = loaded.panelsEnabled;
       paneWeights = loaded.paneWeights;
       console.log(
         paint(
-          `Preferences loaded. stream=${streamEnabled} layout=${layoutEnabled} panels=${panelsEnabled}`,
+          `Preferences loaded. stream=${streamEnabled} layout=${layoutEnabled} layoutStyle=${liveLayoutStyle} panels=${panelsEnabled}`,
           "green"
         )
       );
@@ -820,12 +1018,14 @@ Work step by step and explain what you are doing.`,
     if (action === "reset") {
       streamEnabled = true;
       layoutEnabled = true;
+      liveLayoutStyle = "full";
       panelsEnabled = true;
       paneWeights = cloneDefaultPaneWeights();
       const ok = saveCliPreferences(
         buildCliPreferences({
           streamEnabled,
           layoutEnabled,
+          layoutStyle: liveLayoutStyle,
           panelsEnabled,
           paneWeights,
         })
@@ -908,6 +1108,7 @@ Work step by step and explain what you are doing.`,
     const defaults = buildCliPreferences({
       streamEnabled,
       layoutEnabled,
+      layoutStyle: liveLayoutStyle,
       panelsEnabled,
       paneWeights,
     });
@@ -923,7 +1124,7 @@ Work step by step and explain what you are doing.`,
   } else if (loadedPrefs) {
     console.log(
       paint(
-        `Loaded preferences from ${CLI_PREFS_PATH}: stream=${streamEnabled}, layout=${layoutEnabled}, panels=${panelsEnabled}.`,
+        `Loaded preferences from ${CLI_PREFS_PATH}: stream=${streamEnabled}, layout=${layoutEnabled}, layoutStyle=${liveLayoutStyle}, panels=${panelsEnabled}.`,
         "dim"
       )
     );
@@ -931,11 +1132,22 @@ Work step by step and explain what you are doing.`,
 
   let busy = false;
   rl.setPrompt(paint("you> ", "green"));
-  printBanner(providerType, model, streamEnabled, overseer, layoutEnabled);
+  printBanner(
+    providerType,
+    model,
+    streamEnabled,
+    overseer,
+    layoutEnabled,
+    liveLayoutStyle,
+    mcpEnabled
+  );
   rl.prompt();
 
   rl.on("close", () => {
     persistCliPrefs("readline close");
+    if (mcpRuntime) {
+      void mcpRuntime.stop().catch(() => undefined);
+    }
   });
 
   rl.on("line", async (input) => {
@@ -952,6 +1164,13 @@ Work step by step and explain what you are doing.`,
 
     if (trimmed === "/exit" || trimmed.toLowerCase() === "exit") {
       persistCliPrefs("exit command");
+      if (mcpRuntime) {
+        try {
+          await mcpRuntime.stop();
+        } catch {
+          // Ignore shutdown errors during interactive exit.
+        }
+      }
       console.log(paint("Goodbye.", "dim"));
       rl.close();
       return;
@@ -969,6 +1188,16 @@ Work step by step and explain what you are doing.`,
       streamEnabled = trimmed.endsWith("on");
       logToggle(`Streaming ${streamEnabled ? "enabled" : "disabled"}.`, streamEnabled);
       persistCliPrefs("stream command");
+      rl.prompt();
+      return;
+    }
+    if (trimmed === "/layout style full" || trimmed === "/layout style diff") {
+      liveLayoutStyle = trimmed.endsWith("diff") ? "diff" : "full";
+      logToggle(
+        `Live layout render style set to ${liveLayoutStyle} (applies to next turn).`,
+        liveLayoutStyle === "diff"
+      );
+      persistCliPrefs("layout style command");
       rl.prompt();
       return;
     }
@@ -1014,7 +1243,7 @@ Work step by step and explain what you are doing.`,
             .getEventLogger()
             .getEvents()
             .slice(eventsBefore);
-          renderLiveTurn({
+          return buildLiveTurnLines({
             providerType,
             model,
             streamEnabled,
@@ -1029,7 +1258,7 @@ Work step by step and explain what you are doing.`,
             toolsUsed: [],
             paneWeights,
           });
-        });
+        }, liveLayoutStyle);
       } else {
         stopSpinner = startSpinner("thinking…");
       }

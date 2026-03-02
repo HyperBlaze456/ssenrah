@@ -5,6 +5,7 @@ import { TeamMessage, TeamTask } from "./types";
 import { Beholder } from "../harness/beholder";
 import { TeamMailbox } from "./mailbox";
 import { createDefaultToolRegistry, StaticToolRegistry } from "../tools/registry";
+import type { RiskLevel } from "../harness/policy-engine";
 
 /**
  * WorkerAgent — a specialized Agent that runs a single assigned task.
@@ -21,6 +22,7 @@ export class WorkerAgent {
   private beholder?: Beholder;
   private toolRegistry: StaticToolRegistry;
   private toolPacks: string[];
+  private toolRiskOverrides: Record<string, RiskLevel>;
 
   constructor(
     id: string,
@@ -29,7 +31,8 @@ export class WorkerAgent {
     verbose = false,
     beholder?: Beholder,
     toolRegistry?: StaticToolRegistry,
-    toolPacks?: string[]
+    toolPacks?: string[],
+    toolRiskOverrides?: Record<string, RiskLevel>
   ) {
     this.id = id;
     this.verbose = verbose;
@@ -38,12 +41,14 @@ export class WorkerAgent {
     this.beholder = beholder;
     this.toolRegistry = toolRegistry ?? createDefaultToolRegistry();
     this.toolPacks = toolPacks ?? ["filesystem"];
+    this.toolRiskOverrides = { ...(toolRiskOverrides ?? {}) };
     this.agent = new Agent({
       provider,
       model,
       toolRegistry: this.toolRegistry,
       toolPacks: this.toolPacks,
-      intentRequired: true,
+      intentRequired: false,
+      toolRiskOverrides: this.toolRiskOverrides,
       systemPrompt: this.buildSystemPrompt(),
     });
     if (this.beholder) {
@@ -92,7 +97,8 @@ Use any relevant coordination context above while executing the task.`;
         toolRegistry: this.toolRegistry,
         toolPacks: this.toolPacks,
         signal,
-        intentRequired: true,
+        intentRequired: false,
+        toolRiskOverrides: this.toolRiskOverrides,
         systemPrompt: this.buildSystemPrompt(),
       });
       if (this.beholder) {

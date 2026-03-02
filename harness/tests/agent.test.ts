@@ -251,6 +251,7 @@ describe("Agent", () => {
       provider,
       model: "test",
       maxTurns: 1,
+      intentRequired: true,
       tools: [
         {
           name: "echo",
@@ -265,6 +266,43 @@ describe("Agent", () => {
     expectDoneCompatibility(result, "max_turns");
     expect(result.phase).toBe("failed");
     expect(result.toolsUsed).toEqual([]);
+  });
+
+  it("allows undeclared tool calls by default", async () => {
+    const provider: LLMProvider = {
+      name: "mock",
+      chat: jest
+        .fn()
+        .mockResolvedValueOnce({
+          textBlocks: ["Calling a tool without intent tags"],
+          toolCalls: [{ id: "tc1", name: "echo", input: { message: "hi" } }],
+          stopReason: "tool_use",
+        } satisfies ChatResponse)
+        .mockResolvedValueOnce({
+          textBlocks: ["done"],
+          toolCalls: [],
+          stopReason: "end_turn",
+        } satisfies ChatResponse),
+    };
+
+    const runTool = jest.fn().mockResolvedValue("echo: hi");
+    const agent = new Agent({
+      provider,
+      model: "test",
+      tools: [
+        {
+          name: "echo",
+          description: "echo",
+          inputSchema: { type: "object", properties: {}, required: [] },
+          run: runTool,
+        },
+      ],
+    });
+
+    const result = await agent.run("hi");
+    expectDoneCompatibility(result, "completed");
+    expect(result.toolsUsed).toEqual(["echo"]);
+    expect(runTool).toHaveBeenCalledTimes(1);
   });
 
   it("returns max_tokens status while keeping done=false compatibility", async () => {
@@ -329,6 +367,51 @@ describe("Agent", () => {
       action: "await_user",
       tool: "edit_file",
       riskLevel: "write",
+    });
+  });
+
+  it("uses toolRiskOverrides before heuristic risk inference", async () => {
+    const provider: LLMProvider = {
+      name: "mock",
+      chat: jest.fn().mockResolvedValue({
+        textBlocks: ["Attempting a read tool call"],
+        toolCalls: [{ id: "tc1", name: "read_file", input: { path: "/tmp/a" } }],
+        stopReason: "tool_use",
+      } satisfies ChatResponse),
+    };
+
+    const runTool = jest.fn().mockResolvedValue("ok");
+    const agent = new Agent({
+      provider,
+      model: "test",
+      policyProfile: "strict",
+      toolRiskOverrides: {
+        read_file: "exec",
+      },
+      tools: [
+        {
+          name: "read_file",
+          description: "read",
+          inputSchema: { type: "object", properties: {}, required: [] },
+          run: runTool,
+        },
+      ],
+    });
+
+    const result = await agent.run("read file");
+
+    expectDoneCompatibility(result, "await_user");
+    expect(result.reason).toBe("policy_await_user");
+    expect(runTool).not.toHaveBeenCalled();
+
+    const policyEvents = agent
+      .getEventLogger()
+      .getEvents()
+      .filter((event) => event.type === "policy");
+    expect(policyEvents[policyEvents.length - 1]?.data).toMatchObject({
+      tool: "read_file",
+      riskLevel: "exec",
+      action: "await_user",
     });
   });
 

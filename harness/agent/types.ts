@@ -2,13 +2,13 @@ import {
   LLMProvider,
   ChatMessage,
   ChatResponse,
-  ToolCall,
   ToolSchema,
 } from "../providers/types";
 import type {
   ApprovalHandler,
   PolicyEngine,
   PolicyProfile,
+  RiskLevel,
 } from "../harness/policy-engine";
 
 /**
@@ -77,7 +77,7 @@ export interface AgentConfig {
   tools?: ToolDefinition[];
   /** AbortSignal that cancels the agent loop mid-execution. */
   signal?: AbortSignal;
-  /** Require intent declarations before tool execution. Default: true. */
+  /** Require intent declarations before tool execution. Default: false (provider-native tool calling). */
   intentRequired?: boolean;
   /** Cheap provider for fallback agent on tool failures. */
   fallbackProvider?: LLMProvider;
@@ -115,6 +115,8 @@ export interface AgentConfig {
   policyEngine?: PolicyEngine;
   /** Optional human approval handler for await_user policy decisions. */
   approvalHandler?: ApprovalHandler;
+  /** Optional per-tool risk overrides (used before heuristic inference). */
+  toolRiskOverrides?: Record<string, RiskLevel>;
 }
 
 /**

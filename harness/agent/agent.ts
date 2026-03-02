@@ -25,6 +25,7 @@ import { Beholder, BeholderVerdict } from "../harness/beholder";
 import { EventLogger } from "../harness/events";
 import { createCheckpoint, saveCheckpoint } from "../harness/checkpoints";
 import { ApprovalHandler, PolicyEngine, RiskLevel } from "../harness/policy-engine";
+import { inferRiskLevel } from "../harness/risk-inference";
 import os from "os";
 import path from "path";
 
@@ -66,6 +67,7 @@ export class Agent {
   private eventLogger: EventLogger;
   private policyEngine: PolicyEngine;
   private approvalHandler?: ApprovalHandler;
+  private toolRiskOverrides: Record<string, RiskLevel>;
   private history: Message[] = [];
 
   constructor(config: AgentConfig) {
@@ -81,7 +83,7 @@ export class Agent {
     this.checkpointBaseDir = config.checkpointBaseDir;
     this.checkpointEnabled =
       config.checkpointEnabled ?? Boolean(config.sessionId?.trim());
-    this.intentRequired = config.intentRequired ?? true;
+    this.intentRequired = config.intentRequired ?? false;
     this.eventLogger = new EventLogger({
       filePath: config.eventLogPath ?? defaultEventLogPath(this.sessionId),
     });
@@ -108,6 +110,7 @@ export class Agent {
         maxToolCalls: config.policyMaxToolCalls,
       });
     this.approvalHandler = config.approvalHandler;
+    this.toolRiskOverrides = { ...(config.toolRiskOverrides ?? {}) };
   }
 
   /** Attach a Beholder overseer to monitor this agent. */
@@ -350,7 +353,10 @@ export class Agent {
         }
 
         const matchedIntent = intents.find((intent) => intent.toolName === tc.name);
-        const inferredRisk: RiskLevel = matchedIntent?.riskLevel ?? "exec";
+        const inferredRisk: RiskLevel =
+          this.toolRiskOverrides[tc.name] ??
+          matchedIntent?.riskLevel ??
+          inferRiskLevel(tc.name, tc.input);
         const policyDecision = await this.policyEngine.evaluateToolCall(
           {
             toolName: tc.name,
@@ -404,9 +410,9 @@ export class Agent {
         if (this.beholder) {
           const intent = matchedIntent ?? {
             toolName: tc.name,
-            purpose: "unknown",
-            expectedOutcome: "unknown",
-            riskLevel: "read" as const,
+            purpose: `Advance request: ${summarizeUserGoalForIntent(userMessage)}`,
+            expectedOutcome: `Tool "${tc.name}" should produce output that moves the task forward`,
+            riskLevel: inferredRisk,
             timestamp: new Date().toISOString(),
           };
 
@@ -463,9 +469,9 @@ export class Agent {
         if (isError && this.fallbackAgent && tool) {
           const intent = intents.find((i) => i.toolName === tc.name) ?? {
             toolName: tc.name,
-            purpose: "execute tool",
-            expectedOutcome: "success",
-            riskLevel: "read" as const,
+            purpose: `Recover from a failed call while working on: ${summarizeUserGoalForIntent(userMessage)}`,
+            expectedOutcome: `A successful alternative to "${tc.name}"`,
+            riskLevel: inferredRisk,
             timestamp: new Date().toISOString(),
           };
 
@@ -620,6 +626,15 @@ function truncateCheckpointSummary(text: string): string | undefined {
   if (!trimmed) return undefined;
   const max = 500;
   return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 1)}…`;
+}
+
+function summarizeUserGoalForIntent(userMessage: string): string {
+  const normalized = userMessage.replace(/\s+/g, " ").trim();
+  if (!normalized) return "current user request";
+  const max = 120;
+  return normalized.length <= max
+    ? normalized
+    : `${normalized.slice(0, max - 1)}…`;
 }
 
 function dedupeToolsByName(tools: ToolDefinition[]): ToolDefinition[] {

@@ -10,11 +10,13 @@ This folder contains the hackathon harness reference implementation.
   - OpenAI-compatible (`fetch`, configurable `baseUrl`)
 - **Core agent loop** (`agent/`)
   - Provider-agnostic chat + tool loop
-  - Intent gate (tool calls must declare intent)
+  - Provider-native tool calling by default (optional legacy intent gate)
   - Tool fallback agent on failures
   - Event logging to `~/.ssenrah/sessions/<id>/events.jsonl`
 - **Harness safety primitives** (`harness/`)
   - `intent.ts` — parse/validate intent declarations
+  - `risk-inference.ts` — infer tool risk directly from provider tool calls
+  - `mcp-config.ts`, `mcp-stdio-client.ts`, `mcp-runtime.ts` — MCP server loading + stdio transport + runtime tool exposure
   - `beholder.ts` — drift/loop/rate/budget oversight
   - `fallback.ts` — constrained retry planner
   - `events.ts` — JSONL logger
@@ -44,14 +46,18 @@ npm test
 
 # Interactive agent CLI
 npm run agent -- --provider gemini --model gemini-2.0-flash --overseer
+# Enable MCP servers from project config
+npm run agent -- --provider gemini --model gemini-2.0-flash --mcp --mcp-config ./.ssenrah/mcp.servers.json
 # Streamed TUI mode (default on, disable with --no-stream)
 npm run agent -- --provider openai --model gpt-4o --stream
 # Disable split-pane live layout if needed
 npm run agent -- --no-layout
+# Keep split-pane layout but avoid full-screen redraws
+npm run agent -- --layout-style diff
 # Reset persisted CLI preferences
 npm run agent -- --reset-prefs
 # In-session commands
-# /help  /stream on|off  /layout on|off  /panels on|off  /pane ...  /prefs ...  /clear  /exit
+# /help  /stream on|off  /layout on|off  /layout style full|diff  /panels on|off  /pane ...  /prefs ...  /clear  /exit
 # Keyboard shortcuts: Ctrl+L clear, Ctrl+G stream, Ctrl+O layout, Ctrl+B panels
 
 # Harness demo
@@ -60,6 +66,42 @@ npm run demo:harness
 # Vision QA demo
 npm run demo:vision-qa -- ./path/to/screenshot.png "optional context"
 ```
+
+## MCP config (`stdio` v1)
+
+Create `.ssenrah/mcp.servers.json` in the project root:
+
+```json
+{
+  "servers": {
+    "docs": {
+      "transport": "stdio",
+      "command": "${MCP_DOCS_BIN}",
+      "args": ["--stdio"],
+      "allowlist": {
+        "tools": ["search_docs"],
+        "toolRisks": {
+          "search_docs": "read"
+        },
+        "resources": ["resource://docs/index"],
+        "resourceRisks": {
+          "resource://docs/index": "read"
+        },
+        "prompts": ["summarize_doc"],
+        "promptRisks": {
+          "summarize_doc": "read"
+        }
+      }
+    }
+  }
+}
+```
+
+Notes:
+- `transport` currently supports only `stdio`.
+- `${VAR}` placeholders are resolved from environment variables at startup.
+- Every allowlisted tool/resource/prompt requires an explicit risk entry.
+- Exposed tool names are namespaced (`mcp.<server>.*`) and added via `mcp` + `mcp.<server>` tool packs.
 
 ## Environment variables
 

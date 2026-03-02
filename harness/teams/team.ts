@@ -13,7 +13,10 @@ import { ReconcileLoop } from "./reconcile";
 import { evaluateMvpRegressionGates } from "./regression-gates";
 import { createDefaultToolRegistry, StaticToolRegistry } from "../tools/registry";
 import { createSpawnAgentTool } from "../tools/spawn-agent";
-import { createTaskTools } from "../tools/task-tools";
+import { DEFAULT_MCP_CONFIG_PATH, loadMcpHarnessConfig } from "../harness/mcp-config";
+import { createStdioMcpClientFactory, toMcpRuntimeConfig } from "../harness/mcp-adapter";
+import { McpRuntime, McpPackDefinitions } from "../harness/mcp-runtime";
+import { RiskLevel } from "../harness/policy-engine";
 
 const DEFAULT_ORCHESTRATOR_MODEL = "gemini-2.0-flash";
 const DEFAULT_WORKER_MODEL = "gemini-2.0-flash";
@@ -177,6 +180,9 @@ export class Team {
     const state = new TeamStateTracker({ runId, goal });
     const mailbox = new TeamMailbox();
     const priorityMailbox = new PriorityMailbox();
+    let mcpRuntime: McpRuntime | undefined;
+    let mcpPackDefinitions: McpPackDefinitions = {};
+    let mcpRiskOverrides: Record<string, RiskLevel> = {};
     const reconcileLoop = new ReconcileLoop({
       policy: this.runtimePolicy,
       mailbox: priorityMailbox,
@@ -187,6 +193,24 @@ export class Team {
       this.runtimePolicy.transition("planning");
       state.setPhase("planning");
       eventBus.emit("run_started", "team", { goal, runId });
+
+      if (this.config.mcpEnabled) {
+        const resolvedConfig = loadMcpHarnessConfig(
+          this.config.mcpConfigPath ?? DEFAULT_MCP_CONFIG_PATH
+        );
+        mcpRuntime = new McpRuntime({
+          config: toMcpRuntimeConfig(resolvedConfig),
+          clientFactory: createStdioMcpClientFactory(),
+        });
+        await mcpRuntime.start();
+        mcpPackDefinitions = await mcpRuntime.getPackDefinitions();
+        mcpRiskOverrides = await mcpRuntime.getRiskOverrides();
+        if (verbose) {
+          console.log(
+            `[Team] MCP enabled with ${Object.keys(resolvedConfig.servers).length} server(s)`
+          );
+        }
+      }
 
       if (verbose) {
         console.log(`\n[Team: ${this.config.name}] Goal: ${goal}`);
@@ -287,22 +311,36 @@ export class Team {
 
             return executeWithRestart(
               (attempt) => {
-                // Build enriched tool registry if agent types are available
-                let workerToolRegistry: StaticToolRegistry | undefined;
-                let workerToolPacks: string[] | undefined;
+                const workerToolRegistry: StaticToolRegistry =
+                  createDefaultToolRegistry();
+                const workerToolPacks: string[] = ["filesystem"];
+
+                for (const [packName, tools] of Object.entries(
+                  mcpPackDefinitions
+                )) {
+                  if (tools && tools.length > 0) {
+                    workerToolRegistry.registerPack(packName, tools);
+                  }
+                }
+                if (mcpPackDefinitions["mcp"] && mcpPackDefinitions["mcp"]!.length > 0) {
+                  workerToolPacks.push("mcp");
+                }
+
                 if (agentTypeRegistry) {
-                  workerToolRegistry = createDefaultToolRegistry({
-                    spawnDeps: {
+                  workerToolRegistry.registerPack("spawn", [
+                    createSpawnAgentTool({
                       registry: agentTypeRegistry,
                       provider: this.workerProvider,
-                      toolRegistry: createDefaultToolRegistry(),
+                      toolRegistry: workerToolRegistry,
                       currentDepth: 0,
-                      parentPolicyProfile: this.runtimePolicy.flags.trustGatingEnabled
+                      parentPolicyProfile: this.runtimePolicy.flags
+                        .trustGatingEnabled
                         ? "strict"
                         : "local-permissive",
-                    },
-                  });
-                  workerToolPacks = ["filesystem", "spawn"];
+                      toolRiskOverrides: mcpRiskOverrides,
+                    }),
+                  ]);
+                  workerToolPacks.push("spawn");
                 }
 
                 return new WorkerAgent(
@@ -312,7 +350,8 @@ export class Team {
                   verbose,
                   this.config.beholder,
                   workerToolRegistry,
-                  workerToolPacks
+                  workerToolPacks,
+                  mcpRiskOverrides
                 );
               },
               task,
@@ -545,6 +584,14 @@ export class Team {
         this.runtimePolicy.transition("idle");
       }
       throw error;
+    } finally {
+      if (mcpRuntime) {
+        try {
+          await mcpRuntime.stop();
+        } catch {
+          // Ignore MCP shutdown errors during team teardown.
+        }
+      }
     }
   }
 }

@@ -37,7 +37,7 @@ export interface AgentType {
   isolation?: AgentTypeIsolation;
   /** Safety cap on turns (default 10). */
   maxTurns?: number;
-  /** Whether to require intent declarations. Default true. */
+  /** Whether to require intent declarations. Default false. */
   intentRequired?: boolean;
   /** Policy profile for this agent type. */
   policyProfile?: PolicyProfile;

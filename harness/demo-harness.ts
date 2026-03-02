@@ -2,7 +2,7 @@
 /**
  * demo-harness — demonstrates the full ssenrah harness:
  *   1. Provider-agnostic agent
- *   2. Intent gate (declares purpose before every tool call)
+ *   2. Provider-native tool calling (no intent tag extraction by default)
  *   3. Beholder overseer (monitors for drift/loops/budget)
  *   4. Fallback agent (retries failed tool calls)
  *   5. Event logging
@@ -53,7 +53,7 @@ async function main() {
 
   console.log(`Provider: ${provider.name} / ${model}`);
   console.log(`Fallback: ${fallbackProvider.name} / ${fallbackModel}`);
-  console.log(`Intent gate: enabled`);
+  console.log(`Intent gate: disabled (provider-native tool calls)`);
   console.log(`Beholder: enabled`);
   console.log("─".repeat(60));
 
@@ -63,7 +63,7 @@ async function main() {
     model,
     toolRegistry,
     toolPacks: ["filesystem"],
-    intentRequired: true,
+    intentRequired: false,
     fallbackProvider,
     fallbackModel,
     systemPrompt: `You are a helpful agent with access to filesystem tools.

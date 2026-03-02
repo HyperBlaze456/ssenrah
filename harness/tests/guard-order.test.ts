@@ -3,7 +3,7 @@ import { Beholder } from "../harness/beholder";
 import { LLMProvider, ChatResponse } from "../providers/types";
 
 describe("guard order", () => {
-  it("enforces intent -> policy -> beholder -> tool -> fallback ordering", async () => {
+  it("enforces policy -> beholder -> tool -> fallback ordering", async () => {
     const provider: LLMProvider = {
       name: "mock-main",
       chat: jest
