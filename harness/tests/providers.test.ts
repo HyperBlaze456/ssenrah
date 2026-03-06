@@ -499,6 +499,7 @@ describe("OpenAIProvider", () => {
     const ssePayload =
       'data: {"choices":[{"delta":{"content":"Hello "},"finish_reason":null}]}\n\n' +
       'data: {"choices":[{"delta":{"content":"world","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"search","arguments":"{\\"query\\":\\"cats\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n' +
+      'data: {"choices":[],"usage":{"prompt_tokens":15,"completion_tokens":8}}\n\n' +
       "data: [DONE]\n\n";
 
     fetchSpy.mockResolvedValue({
@@ -526,9 +527,11 @@ describe("OpenAIProvider", () => {
       { id: "call_1", name: "search", input: { query: "cats" } },
     ]);
     expect(result.stopReason).toBe("tool_use");
+    expect(result.usage).toEqual({ inputTokens: 15, outputTokens: 8 });
 
     const body = JSON.parse(fetchSpy.mock.calls[0][1].body as string);
     expect(body.stream).toBe(true);
+    expect(body.stream_options).toEqual({ include_usage: true });
   });
 });
 

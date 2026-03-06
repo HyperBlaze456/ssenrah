@@ -8,6 +8,7 @@
     "start": "node dist/index.js",
     "dev": "ts-node index.ts",
     "agent": "ts-node agent-cli.ts",
+    "team": "ts-node agent-cli.ts --team",
     "demo:harness": "ts-node demo-harness.ts",
     "demo:vision-qa": "ts-node demo-vision-qa.ts",
     "eval:baseline": "ts-node evals/run-baseline.ts",

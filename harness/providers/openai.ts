@@ -68,6 +68,10 @@ interface OpenAIStreamChunk {
     };
     finish_reason?: string | null;
   }>;
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+  };
 }
 
 export class OpenAIProvider implements LLMProvider {
@@ -183,6 +187,7 @@ export class OpenAIProvider implements LLMProvider {
       model: params.model || this.model,
       messages: openaiMessages,
       stream: true,
+      stream_options: { include_usage: true },
     };
     if (openaiTools) body.tools = openaiTools;
     if (maxTokens) body.max_tokens = maxTokens;
@@ -211,6 +216,7 @@ export class OpenAIProvider implements LLMProvider {
     let buffer = "";
     let combinedText = "";
     let stopReason: ChatResponse["stopReason"] = "end_turn";
+    let usage: ChatResponse["usage"] = undefined;
     const toolCallChunks = new Map<
       number,
       { id: string; name: string; args: string }
@@ -236,6 +242,13 @@ export class OpenAIProvider implements LLMProvider {
           chunk = JSON.parse(payload) as OpenAIStreamChunk;
         } catch {
           continue;
+        }
+
+        if (chunk.usage) {
+          usage = {
+            inputTokens: chunk.usage.prompt_tokens,
+            outputTokens: chunk.usage.completion_tokens,
+          };
         }
 
         const choice = chunk.choices?.[0];
@@ -293,7 +306,7 @@ export class OpenAIProvider implements LLMProvider {
       textBlocks: combinedText ? [combinedText] : [],
       toolCalls,
       stopReason,
-      usage: undefined,
+      usage,
     };
   }
 }

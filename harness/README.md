@@ -61,6 +61,21 @@ npm run agent -- --reset-prefs
 # Keyboard shortcuts: Ctrl+L clear, Ctrl+G stream, Ctrl+O layout, Ctrl+B panels, Ctrl+J newline
 # Multiline prompt: use "\ + Enter" or Ctrl+J to continue, then Enter to submit (or /send)
 
+# Team mode CLI
+npm run team -- --goal "Refactor retry handling and add tests"
+# Parallel worker batch execution
+npm run team -- --goal "Implement P0 entrypoint fixes" --max-workers 3 --verbose
+# Explicit orchestrator + worker model split
+npm run team -- --goal "Audit runtime regression gates" --orchestrator-model gemini-2.0-flash --worker-model gemini-2.5-pro
+# Require orchestrator verification before task completion
+npm run team -- --goal "Ship release checklist updates" --verify-before-complete
+# Team mode with MCP tools
+npm run team -- --goal "Update docs from MCP source" --mcp --mcp-config ./.ssenrah/mcp.servers.json
+
+# Team CLI options
+# --team --goal <text> --max-workers <n> --worker-model <id> --orchestrator-model <id>
+# --verify-before-complete --mcp --mcp-config <path> --verbose
+
 # Harness demo
 npm run demo:harness
 
