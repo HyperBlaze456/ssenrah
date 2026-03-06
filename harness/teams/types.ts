@@ -24,6 +24,7 @@ export interface TeamTask {
 }
 
 export type TrustLevel = "untrusted" | "workspace" | "user" | "managed";
+export type TeamTriggerSource = "flag" | "slash" | "nl_trigger" | "programmatic";
 
 /**
  * A message passed between agents in the team.
@@ -79,6 +80,10 @@ export interface TeamConfig {
   mcpEnabled?: boolean;
   /** Path to MCP server config file. Default: ".ssenrah/mcp.servers.json". */
   mcpConfigPath?: string;
+  /** Source of team mode trigger; defaults to programmatic for non-CLI callers. */
+  triggerSource?: TeamTriggerSource;
+  /** Whether team failure may fallback to single-agent; defaults false. */
+  allowFallback?: boolean;
 }
 
 /**

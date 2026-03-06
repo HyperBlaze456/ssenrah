@@ -5,7 +5,7 @@ import { WorkerAgent } from "./worker";
 import { TeamConfig, TeamResult, TeamTask } from "./types";
 import { TaskGraph } from "./task-graph";
 import { TeamMailbox } from "./mailbox";
-import { RuntimePolicy } from "./policy";
+import { PolicyViolation, RuntimePolicy } from "./policy";
 import { TeamEventBus } from "./events";
 import { TeamStateTracker } from "./state";
 import { PriorityMailbox } from "./priority-mailbox";
@@ -140,7 +140,13 @@ export class Team {
       );
     }
 
-    this.config = { ...config, maxWorkers, workerRestartLimit };
+    this.config = {
+      ...config,
+      maxWorkers,
+      workerRestartLimit,
+      triggerSource: config.triggerSource ?? "programmatic",
+      allowFallback: config.allowFallback ?? false,
+    };
     this.runtimePolicy = new RuntimePolicy(
       config.runtimeFeatureFlags,
       config.runtimeSafetyCaps
@@ -243,8 +249,19 @@ export class Team {
 
       let workerSequence = 0;
       while (!taskGraph.isComplete()) {
-        this.runtimePolicy.enforceRuntimeBudget(Date.now() - startedAtMs);
-        this.runtimePolicy.enforceWorkerCap(maxWorkers);
+        try {
+          this.runtimePolicy.enforceRuntimeBudget(Date.now() - startedAtMs);
+          this.runtimePolicy.enforceWorkerCap(maxWorkers);
+        } catch (err) {
+          if (err instanceof PolicyViolation && err.cap) {
+            eventBus.emit("cap_reached", "policy", {
+              cap: err.cap,
+              message: err.message,
+              triggerSource: this.config.triggerSource,
+            });
+          }
+          throw err;
+        }
 
         const batch = taskGraph.claimReadyTasks(maxWorkers);
         state.setTasks(taskGraph.getTasks());
@@ -311,9 +328,16 @@ export class Team {
 
             return executeWithRestart(
               (attempt) => {
-                const workerToolRegistry: StaticToolRegistry =
-                  createDefaultToolRegistry();
-                const workerToolPacks: string[] = ["filesystem"];
+                const workerToolRegistry: StaticToolRegistry = createDefaultToolRegistry(
+                  {
+                    taskToolsDeps: {
+                      taskGraph,
+                      actorId: workerId,
+                      isOrchestrator: false,
+                    },
+                  }
+                );
+                const workerToolPacks: string[] = ["filesystem", "tasklist"];
 
                 for (const [packName, tools] of Object.entries(
                   mcpPackDefinitions

@@ -25,9 +25,13 @@ import * as os from "os";
 import * as path from "path";
 import { Agent } from "./agent/agent";
 import { createProvider } from "./providers";
-import { LLMProvider } from "./providers/types";
+import { LLMProvider, ProviderConfig } from "./providers/types";
 import { Beholder } from "./harness/beholder";
-import { HarnessEvent, summarizeHarnessEventTypes } from "./harness/events";
+import {
+  EventLogger,
+  HarnessEvent,
+  summarizeHarnessEventTypes,
+} from "./harness/events";
 import { buildRiskStatusLines } from "./harness/risk-status";
 import {
   DEFAULT_MCP_CONFIG_PATH,
@@ -39,11 +43,47 @@ import {
   toMcpRuntimeConfig,
 } from "./harness/mcp-adapter";
 import { createDefaultToolRegistry } from "./tools/registry";
+import { Team } from "./teams/team";
+import { TeamConfig, TeamTriggerSource } from "./teams/types";
 
 type PaneName = "status" | "prompt" | "assistant" | "tasks" | "tools" | "events";
 
 type PaneWeights = Record<PaneName, number>;
 type LayoutRenderStyle = "full" | "diff";
+
+export type TeamRunErrorClass =
+  | "rate_limited"
+  | "timeout"
+  | "temporary_unavailable"
+  | "transport_reset"
+  | "non_transient";
+
+export type TeamSlashCommand = {
+  command: "team";
+  goal: string;
+  allowFallback: boolean;
+  overrides: {
+    maxWorkers?: number;
+    workerModel?: string;
+    orchestratorModel?: string;
+  };
+};
+
+export type TeamNlTriggerDetection = {
+  matched: boolean;
+  goal?: string;
+  pattern?: string;
+};
+
+export type TeamRouteDecision = {
+  route: "single_agent" | "team";
+  triggerSource?: TeamTriggerSource;
+  goal?: string;
+  allowFallback: boolean;
+  fallbackPolicy: "fail_closed" | "transient_only";
+  overrides?: TeamSlashCommand["overrides"];
+  rawInput: string;
+};
 
 const DEFAULT_PANE_WEIGHTS: PaneWeights = {
   status: 2,
@@ -723,7 +763,215 @@ function startSpinner(label: string): () => void {
   };
 }
 
-function parseArgs(): {
+function getTeamFallbackLogger(): EventLogger {
+  return new EventLogger({
+    filePath: path.join(
+      process.cwd(),
+      ".omx",
+      "logs",
+      "agent-cli-team-fallback.jsonl"
+    ),
+  });
+}
+
+function stringifyError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  return JSON.stringify(err);
+}
+
+export function parseTeamSlashCommand(input: string): TeamSlashCommand | null {
+  const tokens = input.trim().split(/\s+/).filter(Boolean);
+  if (tokens[0] !== "/team") return null;
+
+  let allowFallback = false;
+  let maxWorkers: number | undefined;
+  let workerModel: string | undefined;
+  let orchestratorModel: string | undefined;
+  const goalTokens: string[] = [];
+
+  for (let i = 1; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === "--allow-team-fallback") {
+      allowFallback = true;
+      continue;
+    }
+    if (token === "--max-workers" && tokens[i + 1]) {
+      const parsed = Number.parseInt(tokens[i + 1], 10);
+      if (!Number.isInteger(parsed) || parsed < 1) {
+        return null;
+      }
+      maxWorkers = parsed;
+      i++;
+      continue;
+    }
+    if (token === "--worker-model" && tokens[i + 1]) {
+      workerModel = tokens[i + 1];
+      i++;
+      continue;
+    }
+    if (token === "--orchestrator-model" && tokens[i + 1]) {
+      orchestratorModel = tokens[i + 1];
+      i++;
+      continue;
+    }
+    if (token.startsWith("--")) {
+      return null;
+    }
+    goalTokens.push(token);
+  }
+
+  const goal = goalTokens.join(" ").trim();
+  if (!goal) return null;
+
+  return {
+    command: "team",
+    goal,
+    allowFallback,
+    overrides: { maxWorkers, workerModel, orchestratorModel },
+  };
+}
+
+const TEAM_NL_PATTERNS: Array<{ pattern: string; regex: RegExp }> = [
+  { pattern: "team_colon", regex: /^team:\s+(.+)$/i },
+  { pattern: "run_team", regex: /^run team(?: mode)?(?: to)?\s+(.+)$/i },
+  { pattern: "use_team_mode", regex: /^use team mode(?: to)?\s+(.+)$/i },
+];
+
+export function detectTeamNlTrigger(input: string): TeamNlTriggerDetection {
+  const trimmed = input.trim();
+  for (const entry of TEAM_NL_PATTERNS) {
+    const match = trimmed.match(entry.regex);
+    const goal = match?.[1]?.trim();
+    if (goal) {
+      return { matched: true, goal, pattern: entry.pattern };
+    }
+  }
+  return { matched: false };
+}
+
+export function resolveTeamRouteDecision(params: {
+  rawInput: string;
+  teamMode?: boolean;
+  goal?: string;
+  allowTeamFallback?: boolean;
+}): TeamRouteDecision {
+  const rawInput = params.rawInput ?? "";
+  if (params.teamMode) {
+    return {
+      route: "team",
+      triggerSource: "flag",
+      goal: params.goal?.trim(),
+      allowFallback: params.allowTeamFallback ?? false,
+      fallbackPolicy:
+        params.allowTeamFallback === true ? "transient_only" : "fail_closed",
+      rawInput,
+    };
+  }
+
+  const slash = parseTeamSlashCommand(rawInput);
+  if (slash) {
+    return {
+      route: "team",
+      triggerSource: "slash",
+      goal: slash.goal,
+      allowFallback: slash.allowFallback,
+      fallbackPolicy: slash.allowFallback ? "transient_only" : "fail_closed",
+      overrides: slash.overrides,
+      rawInput,
+    };
+  }
+
+  const natural = detectTeamNlTrigger(rawInput);
+  if (natural.matched && natural.goal) {
+    return {
+      route: "team",
+      triggerSource: "nl_trigger",
+      goal: natural.goal,
+      allowFallback: false,
+      fallbackPolicy: "fail_closed",
+      rawInput,
+    };
+  }
+
+  return {
+    route: "single_agent",
+    allowFallback: false,
+    fallbackPolicy: "fail_closed",
+    rawInput,
+  };
+}
+
+export function classifyTeamRunError(err: unknown): TeamRunErrorClass {
+  const text = stringifyError(err).toLowerCase();
+  if (
+    text.includes("rate limit") ||
+    text.includes("rate-limited") ||
+    text.includes("429")
+  ) {
+    return "rate_limited";
+  }
+  if (
+    text.includes("timeout") ||
+    text.includes("timed out") ||
+    text.includes("etimedout")
+  ) {
+    return "timeout";
+  }
+  if (
+    text.includes("temporarily unavailable") ||
+    text.includes("temporary unavailable") ||
+    text.includes("service unavailable") ||
+    text.includes("503")
+  ) {
+    return "temporary_unavailable";
+  }
+  if (
+    text.includes("econnreset") ||
+    text.includes("connection reset") ||
+    text.includes("socket hang up") ||
+    text.includes("transport reset")
+  ) {
+    return "transport_reset";
+  }
+  return "non_transient";
+}
+
+function isTransientTeamRunError(errorClass: TeamRunErrorClass): boolean {
+  return errorClass !== "non_transient";
+}
+
+function logTeamFallbackEvent(
+  logger: EventLogger,
+  type: "team_fallback_decision" | "team_fallback_outcome",
+  payload: {
+    triggerSource: TeamTriggerSource;
+    interactive: boolean;
+    allowTeamFallback: boolean;
+    errorClass: TeamRunErrorClass;
+    fallbackEligible: boolean;
+    fallbackUsed: boolean;
+    reason: string;
+    outcome?: "fallback_success" | "fallback_failed" | "no_fallback";
+    exitCode?: 0 | 1;
+  }
+): void {
+  logger.log({
+    timestamp: new Date().toISOString(),
+    type,
+    agentId: "agent-cli",
+    data: payload,
+  });
+}
+
+async function runSingleAgentFallbackFromTeamFailure(params: {
+  goal: string;
+  runSingleAgentGoal: (goal: string) => Promise<void>;
+}): Promise<void> {
+  await params.runSingleAgentGoal(params.goal);
+}
+
+function parseArgs(argv: string[] = process.argv.slice(2)): {
   providerType: "anthropic" | "gemini" | "openai";
   model: string;
   overseer: boolean;
@@ -734,8 +982,16 @@ function parseArgs(): {
   mcpEnabled: boolean;
   mcpConfigPath?: string;
   resetPrefs: boolean;
+  teamMode: boolean;
+  goal?: string;
+  maxWorkers?: number;
+  workerModel?: string;
+  orchestratorModel?: string;
+  verifyBeforeComplete: boolean;
+  verbose: boolean;
+  allowTeamFallback: boolean;
 } {
-  const args = process.argv.slice(2);
+  const args = argv;
   let providerType: "anthropic" | "gemini" | "openai" = "anthropic";
   let model = "claude-sonnet-4-20250514";
   let overseer = false;
@@ -746,6 +1002,14 @@ function parseArgs(): {
   let mcpEnabled = false;
   let mcpConfigPath: string | undefined;
   let resetPrefs = false;
+  let teamMode = false;
+  let goal: string | undefined;
+  let maxWorkers: number | undefined;
+  let workerModel: string | undefined;
+  let orchestratorModel: string | undefined;
+  let verifyBeforeComplete = false;
+  let verbose = false;
+  let allowTeamFallback = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--provider" && args[i + 1]) {
@@ -789,6 +1053,33 @@ function parseArgs(): {
       i++;
     } else if (args[i] === "--reset-prefs") {
       resetPrefs = true;
+    } else if (args[i] === "--team") {
+      teamMode = true;
+    } else if (args[i] === "--allow-team-fallback") {
+      allowTeamFallback = true;
+    } else if (args[i] === "--goal" && args[i + 1]) {
+      goal = args[i + 1];
+      i++;
+    } else if (args[i] === "--max-workers" && args[i + 1]) {
+      const parsed = Number.parseInt(args[i + 1], 10);
+      if (!Number.isInteger(parsed) || parsed < 1) {
+        console.error(
+          `Invalid --max-workers value: ${args[i + 1]}. Use a positive integer.`
+        );
+        process.exit(1);
+      }
+      maxWorkers = parsed;
+      i++;
+    } else if (args[i] === "--worker-model" && args[i + 1]) {
+      workerModel = args[i + 1];
+      i++;
+    } else if (args[i] === "--orchestrator-model" && args[i + 1]) {
+      orchestratorModel = args[i + 1];
+      i++;
+    } else if (args[i] === "--verify-before-complete") {
+      verifyBeforeComplete = true;
+    } else if (args[i] === "--verbose") {
+      verbose = true;
     }
   }
 
@@ -810,7 +1101,184 @@ function parseArgs(): {
     mcpEnabled,
     mcpConfigPath,
     resetPrefs,
+    teamMode,
+    goal,
+    maxWorkers,
+    workerModel,
+    orchestratorModel,
+    verifyBeforeComplete,
+    verbose,
+    allowTeamFallback,
   };
+}
+
+export function buildTeamRunConfig(
+  args: ReturnType<typeof parseArgs>,
+  providerFactory: (config: ProviderConfig) => LLMProvider = createProvider
+): { goal: string; teamConfig: TeamConfig } {
+  const goal = args.goal?.trim();
+  if (!goal) {
+    throw new Error("Team mode requires --goal <text>.");
+  }
+
+  const orchestratorModel = args.orchestratorModel ?? args.model;
+  const workerModel = args.workerModel ?? args.model;
+
+  const teamConfig: TeamConfig = {
+    name: "cli-team",
+    orchestratorProvider: providerFactory({
+      type: args.providerType,
+      model: orchestratorModel,
+    }),
+    workerProvider: providerFactory({
+      type: args.providerType,
+      model: workerModel,
+    }),
+    orchestratorModel,
+    workerModel,
+    maxWorkers: args.maxWorkers,
+    verifyBeforeComplete: args.verifyBeforeComplete,
+    mcpEnabled: args.mcpEnabled,
+    mcpConfigPath: args.mcpConfigPath,
+    verbose: args.verbose,
+    triggerSource: "flag",
+    allowFallback: args.allowTeamFallback,
+  };
+
+  return { goal, teamConfig };
+}
+
+function buildTeamRunConfigFromDecision(params: {
+  args: ReturnType<typeof parseArgs>;
+  decision: TeamRouteDecision;
+  providerFactory?: (config: ProviderConfig) => LLMProvider;
+}): { goal: string; teamConfig: TeamConfig } {
+  const { args, decision } = params;
+  const goal = decision.goal?.trim();
+  if (!goal) {
+    throw new Error("Team mode requires a non-empty goal.");
+  }
+  const providerFactory = params.providerFactory ?? createProvider;
+  const orchestratorModel =
+    decision.overrides?.orchestratorModel ?? args.orchestratorModel ?? args.model;
+  const workerModel = decision.overrides?.workerModel ?? args.workerModel ?? args.model;
+
+  return {
+    goal,
+    teamConfig: {
+      name: "cli-team",
+      orchestratorProvider: providerFactory({
+        type: args.providerType,
+        model: orchestratorModel,
+      }),
+      workerProvider: providerFactory({
+        type: args.providerType,
+        model: workerModel,
+      }),
+      orchestratorModel,
+      workerModel,
+      maxWorkers: decision.overrides?.maxWorkers ?? args.maxWorkers,
+      verifyBeforeComplete: args.verifyBeforeComplete,
+      mcpEnabled: args.mcpEnabled,
+      mcpConfigPath: args.mcpConfigPath,
+      verbose: args.verbose,
+      triggerSource: decision.triggerSource ?? "programmatic",
+      allowFallback: decision.allowFallback,
+    },
+  };
+}
+
+export async function runTeamRouteWithFallback(params: {
+  decision: TeamRouteDecision;
+  interactive: boolean;
+  runTeam: () => Promise<void>;
+  runSingleAgentGoal: (goal: string) => Promise<void>;
+  onInfo?: (message: string) => void;
+  onError?: (message: string) => void;
+  fallbackLogger?: EventLogger;
+}): Promise<void> {
+  const {
+    decision,
+    interactive,
+    runTeam,
+    runSingleAgentGoal,
+    onInfo,
+    onError,
+    fallbackLogger = getTeamFallbackLogger(),
+  } = params;
+
+  try {
+    await runTeam();
+    return;
+  } catch (err) {
+    const errorClass = classifyTeamRunError(err);
+    const fallbackEligible =
+      isTransientTeamRunError(errorClass) && decision.allowFallback;
+    const reason = fallbackEligible
+      ? `Team run failed (${errorClass}); using single-agent fallback.`
+      : `Team run failed (${errorClass}); fallback disabled by policy.`;
+    const triggerSource = decision.triggerSource ?? "programmatic";
+
+    logTeamFallbackEvent(fallbackLogger, "team_fallback_decision", {
+      triggerSource,
+      interactive,
+      allowTeamFallback: decision.allowFallback,
+      errorClass,
+      fallbackEligible,
+      fallbackUsed: false,
+      reason,
+    });
+
+    if (!fallbackEligible || !decision.goal) {
+      logTeamFallbackEvent(fallbackLogger, "team_fallback_outcome", {
+        triggerSource,
+        interactive,
+        allowTeamFallback: decision.allowFallback,
+        errorClass,
+        fallbackEligible,
+        fallbackUsed: false,
+        reason,
+        outcome: "no_fallback",
+        exitCode: interactive ? undefined : 1,
+      });
+      throw err;
+    }
+
+    onInfo?.(paint(reason, "yellow"));
+    try {
+      await runSingleAgentFallbackFromTeamFailure({
+        goal: decision.goal,
+        runSingleAgentGoal,
+      });
+      logTeamFallbackEvent(fallbackLogger, "team_fallback_outcome", {
+        triggerSource,
+        interactive,
+        allowTeamFallback: decision.allowFallback,
+        errorClass,
+        fallbackEligible,
+        fallbackUsed: true,
+        reason,
+        outcome: "fallback_success",
+        exitCode: interactive ? undefined : 0,
+      });
+      return;
+    } catch (fallbackErr) {
+      const fallbackReason = `Fallback execution failed: ${stringifyError(fallbackErr)}`;
+      onError?.(paint(fallbackReason, "red"));
+      logTeamFallbackEvent(fallbackLogger, "team_fallback_outcome", {
+        triggerSource,
+        interactive,
+        allowTeamFallback: decision.allowFallback,
+        errorClass,
+        fallbackEligible,
+        fallbackUsed: true,
+        reason: fallbackReason,
+        outcome: "fallback_failed",
+        exitCode: interactive ? undefined : 1,
+      });
+      throw fallbackErr;
+    }
+  }
 }
 
 async function main() {
@@ -825,7 +1293,147 @@ async function main() {
     mcpEnabled,
     mcpConfigPath,
     resetPrefs,
+    teamMode,
+    goal,
+    maxWorkers,
+    workerModel,
+    orchestratorModel,
+    verifyBeforeComplete,
+    verbose,
+    allowTeamFallback,
   } = parseArgs();
+  const parsedArgs = {
+    providerType,
+    model,
+    overseer,
+    stream,
+    layout,
+    panels,
+    layoutStyle,
+    mcpEnabled,
+    mcpConfigPath,
+    resetPrefs,
+    teamMode,
+    goal,
+    maxWorkers,
+    workerModel,
+    orchestratorModel,
+    verifyBeforeComplete,
+    verbose,
+    allowTeamFallback,
+  };
+  const printTeamRunResult = (result: Awaited<ReturnType<Team["run"]>>): void => {
+    const status = result.success ? paint("SUCCESS", "green") : paint("FAILED", "red");
+    console.log(`\n[Team CLI] ${status} — ${result.summary}`);
+    for (const task of result.tasks) {
+      const taskStatus =
+        task.status === "done"
+          ? paint(task.status, "green")
+          : task.status === "failed"
+            ? paint(task.status, "red")
+            : paint(task.status, "yellow");
+      console.log(` - ${task.id}: ${taskStatus} ${task.description}`);
+    }
+    if (!result.success) {
+      process.exitCode = 1;
+    }
+  };
+
+  if (teamMode) {
+    const { goal: teamGoal, teamConfig } = buildTeamRunConfig(parsedArgs);
+    const decision: TeamRouteDecision = resolveTeamRouteDecision({
+      rawInput: teamGoal,
+      teamMode: true,
+      goal: teamGoal,
+      allowTeamFallback,
+    });
+
+    const runSingleAgentGoal = async (singleGoal: string): Promise<void> => {
+      const fallbackProvider: LLMProvider = createProvider({ type: providerType, model });
+      const fallbackToolRegistry = createDefaultToolRegistry();
+      let fallbackToolPacks: string[] = ["filesystem"];
+      let fallbackMcpRuntime: McpRuntime | undefined;
+      let fallbackRiskOverrides: Record<
+        string,
+        "read" | "write" | "exec" | "destructive"
+      > = {};
+      if (mcpEnabled) {
+        const configPath = mcpConfigPath ?? DEFAULT_MCP_CONFIG_PATH;
+        const resolvedConfig = loadMcpHarnessConfig(configPath);
+        fallbackMcpRuntime = new McpRuntime({
+          config: toMcpRuntimeConfig(resolvedConfig),
+          clientFactory: createStdioMcpClientFactory(),
+        });
+        await fallbackMcpRuntime.start();
+        const packDefinitions = await fallbackMcpRuntime.getPackDefinitions();
+        for (const [packName, tools] of Object.entries(packDefinitions)) {
+          if (tools && tools.length > 0) {
+            fallbackToolRegistry.registerPack(packName, tools);
+          }
+        }
+        if (packDefinitions["mcp"] && packDefinitions["mcp"]!.length > 0) {
+          fallbackToolPacks = [...fallbackToolPacks, "mcp"];
+        }
+        fallbackRiskOverrides = await fallbackMcpRuntime.getRiskOverrides();
+      }
+      const fallbackAgent = new Agent({
+        provider: fallbackProvider,
+        model,
+        toolRegistry: fallbackToolRegistry,
+        toolPacks: fallbackToolPacks,
+        intentRequired: false,
+        toolRiskOverrides: fallbackRiskOverrides,
+        systemPrompt: `You are a helpful agent with access to filesystem tools.
+You can read files, list directories, and edit files.
+Work step by step and explain what you are doing.`,
+      });
+
+      try {
+        const result = await fallbackAgent.run(singleGoal, { stream: false });
+        console.log(`\n${paint("assistant> ", "cyan")}${result.response}\n`);
+        if (result.toolsUsed.length > 0) {
+          console.log(paint(`[tools used: ${result.toolsUsed.join(", ")}]`, "dim"));
+        }
+        console.log(
+          paint(
+            `[tokens in/out: ${result.usage.inputTokens}/${result.usage.outputTokens}]`,
+            "dim"
+          )
+        );
+      } finally {
+        if (fallbackMcpRuntime) {
+          try {
+            await fallbackMcpRuntime.stop();
+          } catch {
+            // Ignore shutdown errors during fallback teardown.
+          }
+        }
+      }
+    };
+
+    try {
+      await runTeamRouteWithFallback({
+        decision,
+        interactive: false,
+        runTeam: async () => {
+          const team = new Team(teamConfig);
+          const result = await team.run(teamGoal);
+          printTeamRunResult(result);
+          if (!result.success) {
+            throw new Error(result.summary || "Team run failed.");
+          }
+        },
+        runSingleAgentGoal,
+        onInfo: (message) => console.log(`\n[Team CLI] ${message}`),
+        onError: (message) => console.error(`\n[Team CLI] ${message}`),
+      });
+    } catch (err) {
+      console.error(`\n[Team CLI] ${paint("FAILED", "red")} — ${stringifyError(err)}`);
+      process.exitCode = 1;
+    }
+    return;
+  }
+
   const loadedPrefs = resetPrefs ? null : loadCliPreferences();
   let streamEnabled = stream ?? loadedPrefs?.streamEnabled ?? true;
   let layoutEnabled = layout ?? loadedPrefs?.layoutEnabled ?? false;
@@ -1415,6 +2023,63 @@ Work step by step and explain what you are doing.`,
     }
   };
 
+  const runTeamFromDecision = async (
+    decision: TeamRouteDecision
+  ): Promise<void> => {
+    const { goal: teamGoal, teamConfig } = buildTeamRunConfigFromDecision({
+      args: parsedArgs,
+      decision,
+    });
+    await runTeamRouteWithFallback({
+      decision,
+      interactive: true,
+      runTeam: async () => {
+        const team = new Team(teamConfig);
+        const result = await team.run(teamGoal);
+        printTeamRunResult(result);
+        if (!result.success) {
+          throw new Error(result.summary || "Team run failed.");
+        }
+      },
+      runSingleAgentGoal: async (singleGoal) => {
+        await runPrompt(singleGoal);
+      },
+      onInfo: (message) => console.log(`\n[Team CLI] ${message}`),
+      onError: (message) => console.error(`\n[Team CLI] ${message}`),
+    });
+  };
+
+  const routeInteractiveInput = async (rawInput: string): Promise<void> => {
+    const trimmed = rawInput.trim();
+    if (trimmed.startsWith("/team")) {
+      const parsed = parseTeamSlashCommand(trimmed);
+      if (!parsed) {
+        console.log(
+          paint(
+            "Invalid /team command. Usage: /team [--allow-team-fallback] [--max-workers <n>] [--worker-model <m>] [--orchestrator-model <m>] <goal...>",
+            "yellow"
+          )
+        );
+        refreshPrompt();
+        rl.prompt();
+        return;
+      }
+    }
+
+    const decision = resolveTeamRouteDecision({ rawInput });
+    if (decision.route === "single_agent") {
+      await runPrompt(rawInput);
+      return;
+    }
+    try {
+      await runTeamFromDecision(decision);
+    } catch (err) {
+      console.error(`\n${paint("Error:", "yellow")} ${stringifyError(err)}\n`);
+    }
+    refreshPrompt();
+    rl.prompt();
+  };
+
   rl.on("line", async (input) => {
     const forcedContinuation = forceContinuationLine;
     forceContinuationLine = false;
@@ -1439,7 +2104,7 @@ Work step by step and explain what you are doing.`,
         const composed = draftLines.join("\n");
         draftLines.length = 0;
         refreshPrompt();
-        await runPrompt(composed);
+        await routeInteractiveInput(composed);
         return;
       }
 
@@ -1454,7 +2119,7 @@ Work step by step and explain what you are doing.`,
       const composed = draftLines.join("\n");
       draftLines.length = 0;
       refreshPrompt();
-      await runPrompt(composed);
+      await routeInteractiveInput(composed);
       return;
     }
 
@@ -1477,8 +2142,18 @@ Work step by step and explain what you are doing.`,
       return;
     }
 
-    await runPrompt(input);
+    await routeInteractiveInput(input);
   });
 }
 
-main();
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(`\n${paint("Error:", "yellow")} ${(err as Error).message}\n`);
+    process.exit(1);
+  });
+}
+
+export {
+  parseArgs,
+  main,
+};
