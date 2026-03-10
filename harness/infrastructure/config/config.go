@@ -13,6 +13,8 @@ type AppConfig struct {
 	Provider    string `json:"provider"`
 	Theme       string `json:"theme"`
 	SidebarOpen bool   `json:"sidebar_open"`
+	MaxTokens   int    `json:"max_tokens,omitempty"`
+	Temperature float64 `json:"temperature,omitempty"`
 }
 
 // LoadConfig reads configuration from a JSON file, falling back to defaults

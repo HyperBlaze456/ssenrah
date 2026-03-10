@@ -3,26 +3,46 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/HyperBlaze456/ssenrah/harness/application"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/conversation"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/session"
-	"github.com/HyperBlaze456/ssenrah/harness/infrastructure/dummy"
+	"github.com/HyperBlaze456/ssenrah/harness/infrastructure"
+	"github.com/HyperBlaze456/ssenrah/harness/infrastructure/config"
 	"github.com/HyperBlaze456/ssenrah/harness/infrastructure/prompt"
 	"github.com/HyperBlaze456/ssenrah/harness/tui"
 )
 
 func main() {
+	// Load configuration
+	cfgPath := filepath.Join(".", "harness.json")
+	cfg, err := config.LoadConfig(cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Config error: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Load system prompt
 	systemPrompt := prompt.LoadDefaultPrompt()
 
+	// Create provider from config
+	prov, err := infrastructure.NewProvider(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Provider error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Resolve model name
+	modelName := cfg.Model
+	if modelName == "" {
+		modelName = "default"
+	}
+
 	// Create domain objects
 	conv := conversation.New()
-	sess := session.New("dummy-v1", "dummy")
-
-	// Create infrastructure (adapters)
-	prov := dummy.NewProvider()
+	sess := session.New(modelName, prov.Name())
 
 	// Create application services
 	chatSvc := application.NewChatService(conv, prov, systemPrompt)

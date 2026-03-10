@@ -3,12 +3,14 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/HyperBlaze456/ssenrah/harness/application"
+	"github.com/HyperBlaze456/ssenrah/harness/domain/provider"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/session"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/shared"
 )
@@ -112,6 +114,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 			a.input.Reset()
+
+			// Handle slash commands
+			if cmd, ok := a.handleSlashCommand(content); ok {
+				return a, cmd
+			}
+
 			a.streaming = true
 			a.sessionService.SetPhase(session.PhaseStreaming)
 			a.statusBar.SetPhase(session.PhaseStreaming)
@@ -140,17 +148,32 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.cancelFn = nil
 		a.sessionService.SetPhase(session.PhaseIdle)
 		a.statusBar.SetPhase(session.PhaseIdle)
-		// Estimate tokens (rough) — use delta, not cumulative
-		deltaTokens := len(msg.FinalMessage.Content) / 4
-		a.totalTokens += deltaTokens
-		a.totalCost += float64(deltaTokens) * 0.000001
+		// Use usage from ChatService (estimated or real from provider)
+		a.totalTokens += msg.Usage.TotalTokens()
+		a.totalCost += msg.Usage.EstimateCost(0.000001, 0.000002)
 		a.sessionService.UpdateStatus(a.totalTokens, a.totalCost)
 		a.sidebar.SetUsage(a.totalTokens, a.totalCost)
 		a.input.SetUsage(a.totalTokens, a.totalCost)
 		a.sidebar.AddActivity(ActivityEntry{
 			Time:    time.Now().Format("15:04"),
-			Message: "response complete",
+			Message: fmt.Sprintf("done (%d tok)", msg.Usage.TotalTokens()),
 		})
+		return a, nil
+
+	case ModelsResultMsg:
+		if msg.Err != nil {
+			a.chat.ShowError(msg.Err)
+			return a, nil
+		}
+		a.showModelList(msg.Models)
+		return a, nil
+
+	case ModelSelectedMsg:
+		a.chatService.SetModel(msg.Model.ID)
+		a.sidebar.SetModelInfo(msg.Model.ID, a.chatService.ProviderName(), msg.Model.ContextWindow)
+		a.input.SetModelInfo(msg.Model.ID, a.chatService.ProviderName())
+		a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
+			fmt.Sprintf("Model switched to %s", msg.Model.ID)))
 		return a, nil
 
 	case StreamErrorMsg:
@@ -205,8 +228,87 @@ func (a *App) sendMessageCmd(ctx context.Context, userMsg shared.Message) tea.Cm
 			return StreamErrorMsg{Err: err}
 		}
 
-		return StreamDoneMsg{FinalMessage: finalMsg}
+		return StreamDoneMsg{FinalMessage: finalMsg, Usage: svc.LastUsage()}
 	}
+}
+
+// handleSlashCommand processes /commands. Returns (cmd, true) if handled.
+func (a *App) handleSlashCommand(input string) (tea.Cmd, bool) {
+	input = strings.TrimSpace(input)
+	if !strings.HasPrefix(input, "/") {
+		return nil, false
+	}
+
+	parts := strings.Fields(input)
+	command := strings.ToLower(parts[0])
+
+	switch command {
+	case "/model":
+		if len(parts) > 1 {
+			// Direct model switch: /model <name>
+			modelID := parts[1]
+			a.chatService.SetModel(modelID)
+			a.sidebar.SetModelInfo(modelID, a.chatService.ProviderName(), 0)
+			a.input.SetModelInfo(modelID, a.chatService.ProviderName())
+			a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
+				fmt.Sprintf("Model switched to %s", modelID)))
+			return nil, true
+		}
+		// List available models
+		return a.fetchModelsCmd(), true
+
+	case "/provider":
+		a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
+			fmt.Sprintf("Current provider: %s", a.chatService.ProviderName())))
+		return nil, true
+
+	case "/help":
+		a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
+			"/model [name]  — list or switch models\n/provider       — show current provider\n/clear          — clear chat\n/help           — show this help"))
+		return nil, true
+
+	case "/clear":
+		a.chat.Clear()
+		return nil, true
+
+	default:
+		a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
+			fmt.Sprintf("Unknown command: %s. Type /help for available commands.", command)))
+		return nil, true
+	}
+}
+
+// fetchModelsCmd fetches available models from the provider.
+func (a *App) fetchModelsCmd() tea.Cmd {
+	svc := a.chatService
+	return func() tea.Msg {
+		models, err := svc.Models(context.Background())
+		return ModelsResultMsg{Models: models, Err: err}
+	}
+}
+
+// showModelList renders the model list in the chat.
+func (a *App) showModelList(models []provider.ModelInfo) {
+	if len(models) == 0 {
+		a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem, "No models available."))
+		return
+	}
+	var sb strings.Builder
+	sb.WriteString("**Available Models:**\n\n")
+	sb.WriteString("| Model | Context | Input $/1M | Output $/1M |\n")
+	sb.WriteString("|-------|---------|------------|-------------|\n")
+	for _, m := range models {
+		name := m.ID
+		if m.Name != "" {
+			name = m.Name
+		}
+		sb.WriteString(fmt.Sprintf("| %s | %dk | $%.2f | $%.2f |\n",
+			name, m.ContextWindow/1000,
+			m.PricePerInputToken*1_000_000,
+			m.PricePerOutputToken*1_000_000))
+	}
+	sb.WriteString("\nUse `/model <name>` to switch.")
+	a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem, sb.String()))
 }
 
 // View composes the full TUI layout.
