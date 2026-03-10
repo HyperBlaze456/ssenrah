@@ -332,23 +332,24 @@ func (a *App) View() string {
 	inputView := a.input.View()
 	statusView := a.statusBar.View()
 
-	// Build main column
-	mainCol := lipgloss.JoinVertical(lipgloss.Left,
+	// Build main column with constrained width
+	mainColStyle := lipgloss.NewStyle().Width(layout.ChatWidth)
+	mainCol := mainColStyle.Render(lipgloss.JoinVertical(lipgloss.Left,
 		chatView,
 		inputView,
 		statusView,
-	)
+	))
 
 	if layout.CompactMode || !a.sidebarOpen {
 		// Compact: show info in top bar
 		info := a.theme.InputInfo.Render(
-			fmt.Sprintf(" %s \u00b7 %s \u00b7 %d tok \u00b7 $%.4f",
+			fmt.Sprintf(" %s · %s · %d tok · $%.4f",
 				a.sidebar.model, a.sidebar.provider, a.sidebar.tokens, a.sidebar.cost),
 		)
 		return lipgloss.JoinVertical(lipgloss.Left, info, mainCol)
 	}
 
-	// Wide: show sidebar
+	// Wide: show sidebar alongside main column
 	sidebarView := a.sidebar.View()
 	return lipgloss.JoinHorizontal(lipgloss.Top, mainCol, sidebarView)
 }
@@ -361,6 +362,7 @@ func (a *App) updateLayout() {
 	a.chat.SetSize(layout.ChatWidth, layout.ChatHeight)
 	a.input.SetSize(layout.ChatWidth)
 	a.sidebar.SetSize(layout.SidebarWidth, layout.SidebarHeight)
-	a.statusBar.SetWidth(a.width)
+	// Status bar must match main column width, not full terminal, so JoinHorizontal works
+	a.statusBar.SetWidth(layout.ChatWidth)
 	a.approval.SetSize(a.width, a.height)
 }

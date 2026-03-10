@@ -13,8 +13,8 @@ type LayoutMetrics struct {
 }
 
 const (
-	sidebarWidth    = 33
-	wideBreakpoint  = 120
+	sidebarWidth    = 30
+	wideBreakpoint  = 100
 	minWidth        = 80
 	minHeight       = 24
 	inputHeight     = 3
