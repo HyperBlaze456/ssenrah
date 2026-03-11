@@ -24,11 +24,11 @@ const baseURL = "https://api.openai.com/v1"
 // oSeriesModels is the set of model ID prefixes that use the "developer" role
 // for system-level instructions.
 var oSeriesModels = map[string]bool{
-	"o1":       true,
-	"o3":       true,
-	"o1-mini":  true,
-	"o3-mini":  true,
-	"o1-pro":   true,
+	"o1":      true,
+	"o3":      true,
+	"o1-mini": true,
+	"o3-mini": true,
+	"o1-pro":  true,
 }
 
 // knownModels holds hardcoded metadata for well-known OpenAI models.
@@ -89,25 +89,55 @@ func (p *Provider) Name() string { return "codex" }
 
 // --- OpenAI wire types ---
 
+type openAIToolCall struct {
+	Index    int    `json:"index"`
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+type openAIToolDefinition struct {
+	Type     string        `json:"type"`
+	Function openAIFuncDef `json:"function"`
+}
+
+type openAIFuncDef struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
+}
+
 type openAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string           `json:"role"`
+	Content    string           `json:"content"`
+	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
+}
+
+type openAIDelta struct {
+	Role      string           `json:"role"`
+	Content   string           `json:"content"`
+	ToolCalls []openAIToolCall `json:"tool_calls"`
 }
 
 type openAIChatRequest struct {
-	Model       string          `json:"model"`
-	Messages    []openAIMessage `json:"messages"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	TopP        *float64        `json:"top_p,omitempty"`
-	Stop        []string        `json:"stop,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
+	Model       string                 `json:"model"`
+	Messages    []openAIMessage        `json:"messages"`
+	MaxTokens   int                    `json:"max_tokens,omitempty"`
+	Temperature *float64               `json:"temperature,omitempty"`
+	TopP        *float64               `json:"top_p,omitempty"`
+	Stop        []string               `json:"stop,omitempty"`
+	Stream      bool                   `json:"stream,omitempty"`
+	Tools       []openAIToolDefinition `json:"tools,omitempty"`
 }
 
 type openAIChoice struct {
-	Message      *openAIMessage  `json:"message"`
-	Delta        *openAIMessage  `json:"delta"`
-	FinishReason string          `json:"finish_reason"`
+	Message      *openAIMessage `json:"message"`
+	Delta        *openAIDelta   `json:"delta"`
+	FinishReason string         `json:"finish_reason"`
 }
 
 type openAIUsage struct {
@@ -154,10 +184,27 @@ func buildMessages(req provider.ChatRequest) []openAIMessage {
 	}
 
 	for _, m := range req.Messages {
-		msgs = append(msgs, openAIMessage{
+		msg := openAIMessage{
 			Role:    string(m.Role),
 			Content: m.Content,
-		})
+		}
+		if m.Role == shared.RoleTool && m.ToolCallID != "" {
+			msg.ToolCallID = m.ToolCallID
+		}
+		if m.Role == shared.RoleAssistant && len(m.ToolCalls) > 0 {
+			for _, tc := range m.ToolCalls {
+				args, _ := json.Marshal(tc.Input)
+				msg.ToolCalls = append(msg.ToolCalls, openAIToolCall{
+					ID:   tc.ID,
+					Type: "function",
+					Function: struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					}{Name: tc.ToolName, Arguments: string(args)},
+				})
+			}
+		}
+		msgs = append(msgs, msg)
 	}
 	return msgs
 }
@@ -180,6 +227,20 @@ func buildRequest(req provider.ChatRequest, stream bool) openAIChatRequest {
 	}
 	if len(req.Options.StopSequences) > 0 {
 		r.Stop = req.Options.StopSequences
+	}
+	if len(req.Tools) > 0 {
+		tools := make([]openAIToolDefinition, len(req.Tools))
+		for i, t := range req.Tools {
+			tools[i] = openAIToolDefinition{
+				Type: "function",
+				Function: openAIFuncDef{
+					Name:        t.Name,
+					Description: t.Description,
+					Parameters:  t.Parameters,
+				},
+			}
+		}
+		r.Tools = tools
 	}
 	return r
 }
@@ -254,17 +315,29 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 		return provider.ChatResponse{}, fmt.Errorf("codex: decode response: %w", err)
 	}
 
-	var text string
-	var stopReason string
+	var text, stopReason string
+	var toolCalls []shared.ToolCall
 	if len(result.Choices) > 0 {
 		if result.Choices[0].Message != nil {
 			text = result.Choices[0].Message.Content
+			for _, tc := range result.Choices[0].Message.ToolCalls {
+				var input map[string]any
+				if tc.Function.Arguments != "" {
+					_ = json.Unmarshal([]byte(tc.Function.Arguments), &input)
+				}
+				toolCalls = append(toolCalls, shared.ToolCall{
+					ID:       tc.ID,
+					ToolName: tc.Function.Name,
+					Input:    input,
+				})
+			}
 		}
 		stopReason = result.Choices[0].FinishReason
 	}
 
 	return provider.ChatResponse{
 		TextContent: text,
+		ToolCalls:   toolCalls,
 		StopReason:  stopReason,
 		Usage: shared.Usage{
 			InputTokens:  result.Usage.PromptTokens,
@@ -288,6 +361,11 @@ func (p *Provider) ChatStream(ctx context.Context, req provider.ChatRequest, han
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
+	var accumulatedToolCalls []shared.ToolCall
+	var finishReason string
+	// toolCallArgs tracks partial argument JSON fragments keyed by delta index.
+	toolCallArgs := make(map[int]*strings.Builder)
+
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -301,7 +379,19 @@ func (p *Provider) ChatStream(ctx context.Context, req provider.ChatRequest, han
 		}
 		payload := strings.TrimPrefix(line, "data: ")
 		if payload == "[DONE]" {
-			handler(shared.StreamChunk{Done: true})
+			// Finalise accumulated tool call argument strings.
+			for i, builder := range toolCallArgs {
+				if i < len(accumulatedToolCalls) && builder.Len() > 0 {
+					var input map[string]any
+					_ = json.Unmarshal([]byte(builder.String()), &input)
+					accumulatedToolCalls[i].Input = input
+				}
+			}
+			handler(shared.StreamChunk{
+				Done:       true,
+				ToolCalls:  accumulatedToolCalls,
+				StopReason: finishReason,
+			})
 			return nil
 		}
 
@@ -315,7 +405,33 @@ func (p *Provider) ChatStream(ctx context.Context, req provider.ChatRequest, han
 			continue
 		}
 
-		delta := event.Choices[0].Delta.Content
+		choice := event.Choices[0]
+
+		// Track finish reason.
+		if choice.FinishReason != "" {
+			finishReason = choice.FinishReason
+		}
+
+		// Accumulate tool calls from delta.
+		for _, tc := range choice.Delta.ToolCalls {
+			idx := tc.Index
+			for len(accumulatedToolCalls) <= idx {
+				accumulatedToolCalls = append(accumulatedToolCalls, shared.ToolCall{})
+				toolCallArgs[len(accumulatedToolCalls)-1] = &strings.Builder{}
+			}
+			if tc.ID != "" {
+				accumulatedToolCalls[idx].ID = tc.ID
+			}
+			if tc.Function.Name != "" {
+				accumulatedToolCalls[idx].ToolName = tc.Function.Name
+			}
+			if tc.Function.Arguments != "" {
+				toolCallArgs[idx].WriteString(tc.Function.Arguments)
+			}
+		}
+
+		// Emit content delta.
+		delta := choice.Delta.Content
 		if delta == "" {
 			continue
 		}

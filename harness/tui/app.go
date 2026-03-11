@@ -17,7 +17,7 @@ import (
 
 // App is the root Bubbletea model that orchestrates all TUI components.
 type App struct {
-	chatService    *application.ChatService
+	agentService   *application.AgentService
 	sessionService *application.SessionService
 	program        *tea.Program
 
@@ -37,13 +37,17 @@ type App struct {
 
 	totalTokens int
 	totalCost   float64
+
+	// Agent loop state
+	agentEventCh       <-chan application.AgentEvent
+	approvalResponseCh chan<- application.ApprovalResponse
 }
 
 // NewApp creates the root App model.
-func NewApp(chatSvc *application.ChatService, sessSvc *application.SessionService) *App {
+func NewApp(agentSvc *application.AgentService, sessSvc *application.SessionService) *App {
 	t := defaultTheme()
 	return &App{
-		chatService:    chatSvc,
+		agentService:   agentSvc,
 		sessionService: sessSvc,
 		keys:           defaultKeyMap(),
 		theme:          t,
@@ -79,6 +83,41 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyMsg:
+		// Approval keys take priority when modal is visible
+		if a.approval.IsVisible() {
+			switch msg.String() {
+			case "y", "Y":
+				a.approval.Hide()
+				if a.approvalResponseCh != nil {
+					a.approvalResponseCh <- application.ApprovalResponse{Approved: true}
+					a.approvalResponseCh = nil
+				}
+				a.sessionService.SetPhase(session.PhaseStreaming)
+				a.statusBar.SetPhase(session.PhaseStreaming)
+				return a, nil
+			case "n", "N":
+				a.approval.Hide()
+				if a.approvalResponseCh != nil {
+					a.approvalResponseCh <- application.ApprovalResponse{Approved: false}
+					a.approvalResponseCh = nil
+				}
+				a.sessionService.SetPhase(session.PhaseStreaming)
+				a.statusBar.SetPhase(session.PhaseStreaming)
+				return a, nil
+			case "a", "A":
+				a.approval.Hide()
+				if a.approvalResponseCh != nil {
+					a.approvalResponseCh <- application.ApprovalResponse{Approved: true, AlwaysAllow: true}
+					a.approvalResponseCh = nil
+				}
+				a.sessionService.SetPhase(session.PhaseStreaming)
+				a.statusBar.SetPhase(session.PhaseStreaming)
+				return a, nil
+			}
+			// Block all other keys while approval is showing
+			return a, nil
+		}
+
 		// Global keys
 		switch {
 		case key.Matches(msg, a.keys.Quit) || key.Matches(msg, a.keys.QuitAlt):
@@ -131,33 +170,22 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ctx, cancel := context.WithCancel(context.Background())
 			a.cancelFn = cancel
 
-			return a, a.sendMessageCmd(ctx, userMsg)
+			return a, a.startAgentCmd(ctx, userMsg)
 
 		case key.Matches(msg, a.keys.ClearChat):
 			a.chat.Clear()
 			return a, nil
 		}
 
-	case StreamChunkMsg:
-		a.chat.AppendChunk(msg.Chunk)
-		return a, nil
+	case agentEventMsg:
+		return a.handleAgentEvent(msg.Event)
 
-	case StreamDoneMsg:
-		a.chat.FinalizeMessage(msg.FinalMessage)
+	case agentChannelClosedMsg:
+		// Agent channel closed without EventDone (shouldn't happen normally)
 		a.streaming = false
 		a.cancelFn = nil
 		a.sessionService.SetPhase(session.PhaseIdle)
 		a.statusBar.SetPhase(session.PhaseIdle)
-		// Use usage from ChatService (estimated or real from provider)
-		a.totalTokens += msg.Usage.TotalTokens()
-		a.totalCost += msg.Usage.EstimateCost(0.000001, 0.000002)
-		a.sessionService.UpdateStatus(a.totalTokens, a.totalCost)
-		a.sidebar.SetUsage(a.totalTokens, a.totalCost)
-		a.input.SetUsage(a.totalTokens, a.totalCost)
-		a.sidebar.AddActivity(ActivityEntry{
-			Time:    time.Now().Format("15:04"),
-			Message: fmt.Sprintf("done (%d tok)", msg.Usage.TotalTokens()),
-		})
 		return a, nil
 
 	case ModelsResultMsg:
@@ -169,25 +197,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case ModelSelectedMsg:
-		a.chatService.SetModel(msg.Model.ID)
-		a.sidebar.SetModelInfo(msg.Model.ID, a.chatService.ProviderName(), msg.Model.ContextWindow)
-		a.input.SetModelInfo(msg.Model.ID, a.chatService.ProviderName())
+		a.agentService.SetModel(msg.Model.ID)
+		a.sidebar.SetModelInfo(msg.Model.ID, a.agentService.ProviderName(), msg.Model.ContextWindow)
+		a.input.SetModelInfo(msg.Model.ID, a.agentService.ProviderName())
 		a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
 			fmt.Sprintf("Model switched to %s", msg.Model.ID)))
-		return a, nil
-
-	case StreamErrorMsg:
-		a.chat.ShowError(msg.Err)
-		a.streaming = false
-		a.cancelFn = nil
-		a.sessionService.SetPhase(session.PhaseIdle)
-		a.statusBar.SetPhase(session.PhaseIdle)
-		return a, nil
-
-	case ApprovalRequestMsg:
-		a.approval.Show(msg.Request)
-		a.sessionService.SetPhase(session.PhaseAwaitingApproval)
-		a.statusBar.SetPhase(session.PhaseAwaitingApproval)
 		return a, nil
 	}
 
@@ -208,28 +222,84 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, tea.Batch(cmds...)
 }
 
-// sendMessageCmd returns a tea.Cmd that runs SendMessage in a goroutine.
-// Captures program and chatService to local vars to avoid data races.
-func (a *App) sendMessageCmd(ctx context.Context, userMsg shared.Message) tea.Cmd {
-	prog := a.program
-	svc := a.chatService
+// startAgentCmd launches the agent loop and starts listening for events.
+func (a *App) startAgentCmd(ctx context.Context, userMsg shared.Message) tea.Cmd {
+	eventCh := make(chan application.AgentEvent, 16)
+	a.agentEventCh = eventCh
+
+	svc := a.agentService // capture to local var for goroutine safety
+	go svc.Run(ctx, userMsg, eventCh)
+
+	return listenAgentEvents(eventCh)
+}
+
+// listenAgentEvents returns a tea.Cmd that reads the next event from the channel.
+func listenAgentEvents(ch <-chan application.AgentEvent) tea.Cmd {
 	return func() tea.Msg {
-		handler := func(chunk shared.StreamChunk) {
-			if prog != nil {
-				prog.Send(StreamChunkMsg{Chunk: chunk})
-			}
+		event, ok := <-ch
+		if !ok {
+			return agentChannelClosedMsg{}
 		}
-
-		finalMsg, err := svc.SendMessage(ctx, userMsg, handler)
-		if err != nil {
-			if ctx.Err() != nil {
-				return StreamErrorMsg{Err: shared.ErrStreamCancelled}
-			}
-			return StreamErrorMsg{Err: err}
-		}
-
-		return StreamDoneMsg{FinalMessage: finalMsg, Usage: svc.LastUsage()}
+		return agentEventMsg{Event: event}
 	}
+}
+
+// handleAgentEvent dispatches a single AgentEvent to the appropriate TUI update.
+func (a *App) handleAgentEvent(event application.AgentEvent) (tea.Model, tea.Cmd) {
+	switch ev := event.(type) {
+	case application.EventStreamChunk:
+		a.chat.AppendChunk(ev.Chunk)
+		return a, listenAgentEvents(a.agentEventCh)
+
+	case application.EventToolCall:
+		a.chat.AddToolCall(ev.Call)
+		a.sidebar.AddActivity(ActivityEntry{
+			Time:    time.Now().Format("15:04"),
+			Message: fmt.Sprintf("tool: %s", ev.Call.ToolName),
+		})
+		return a, listenAgentEvents(a.agentEventCh)
+
+	case application.EventApprovalNeeded:
+		a.approvalResponseCh = ev.ResponseCh
+		a.approval.Show(ev.Request)
+		a.sessionService.SetPhase(session.PhaseAwaitingApproval)
+		a.statusBar.SetPhase(session.PhaseAwaitingApproval)
+		return a, listenAgentEvents(a.agentEventCh)
+
+	case application.EventToolResult:
+		a.chat.AddToolResult(ev.Call, ev.Result)
+		return a, listenAgentEvents(a.agentEventCh)
+
+	case application.EventTurnComplete:
+		a.chat.FinalizeMessage(ev.Message)
+		a.totalTokens += ev.Usage.TotalTokens()
+		a.totalCost += ev.Usage.EstimateCost(0.000001, 0.000002)
+		a.sessionService.UpdateStatus(a.totalTokens, a.totalCost)
+		a.sidebar.SetUsage(a.totalTokens, a.totalCost)
+		a.input.SetUsage(a.totalTokens, a.totalCost)
+		return a, listenAgentEvents(a.agentEventCh)
+
+	case application.EventDone:
+		a.streaming = false
+		a.cancelFn = nil
+		a.sessionService.SetPhase(session.PhaseIdle)
+		a.statusBar.SetPhase(session.PhaseIdle)
+		a.sidebar.AddActivity(ActivityEntry{
+			Time:    time.Now().Format("15:04"),
+			Message: fmt.Sprintf("done (%d turns, %d tok)", ev.TotalTurns, ev.TotalUsage.TotalTokens()),
+		})
+		return a, nil // stop listening
+
+	case application.EventError:
+		a.chat.ShowError(ev.Err)
+		a.streaming = false
+		a.cancelFn = nil
+		a.sessionService.SetPhase(session.PhaseIdle)
+		a.statusBar.SetPhase(session.PhaseIdle)
+		return a, nil // stop listening
+	}
+
+	return a, listenAgentEvents(a.agentEventCh)
 }
 
 // handleSlashCommand processes /commands. Returns (cmd, true) if handled.
@@ -247,9 +317,9 @@ func (a *App) handleSlashCommand(input string) (tea.Cmd, bool) {
 		if len(parts) > 1 {
 			// Direct model switch: /model <name>
 			modelID := parts[1]
-			a.chatService.SetModel(modelID)
-			a.sidebar.SetModelInfo(modelID, a.chatService.ProviderName(), 0)
-			a.input.SetModelInfo(modelID, a.chatService.ProviderName())
+			a.agentService.SetModel(modelID)
+			a.sidebar.SetModelInfo(modelID, a.agentService.ProviderName(), 0)
+			a.input.SetModelInfo(modelID, a.agentService.ProviderName())
 			a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
 				fmt.Sprintf("Model switched to %s", modelID)))
 			return nil, true
@@ -259,7 +329,7 @@ func (a *App) handleSlashCommand(input string) (tea.Cmd, bool) {
 
 	case "/provider":
 		a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
-			fmt.Sprintf("Current provider: %s", a.chatService.ProviderName())))
+			fmt.Sprintf("Current provider: %s", a.agentService.ProviderName())))
 		return nil, true
 
 	case "/help":
@@ -280,7 +350,7 @@ func (a *App) handleSlashCommand(input string) (tea.Cmd, bool) {
 
 // fetchModelsCmd fetches available models from the provider.
 func (a *App) fetchModelsCmd() tea.Cmd {
-	svc := a.chatService
+	svc := a.agentService
 	return func() tea.Msg {
 		models, err := svc.Models(context.Background())
 		return ModelsResultMsg{Models: models, Err: err}

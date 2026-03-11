@@ -10,6 +10,13 @@ type ChatOptions struct {
 	StopSequences []string // optional stop sequences
 }
 
+// ToolDefinition describes a tool the LLM can invoke.
+type ToolDefinition struct {
+	Name        string
+	Description string
+	Parameters  map[string]any // JSON Schema
+}
+
 // ChatRequest represents a request to the LLM provider.
 type ChatRequest struct {
 	Model        string
@@ -17,6 +24,7 @@ type ChatRequest struct {
 	Messages     []shared.Message
 	MaxTokens    int
 	Options      ChatOptions
+	Tools        []ToolDefinition
 }
 
 // ChatResponse represents a complete (non-streaming) response from the LLM.

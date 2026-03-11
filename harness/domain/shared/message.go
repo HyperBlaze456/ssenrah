@@ -23,11 +23,12 @@ const (
 
 // Message represents a single message in a conversation.
 type Message struct {
-	ID        string
-	Role      Role
-	Content   string
-	Timestamp time.Time
-	ToolCalls []ToolCall
+	ID         string
+	Role       Role
+	Content    string
+	Timestamp  time.Time
+	ToolCalls  []ToolCall
+	ToolCallID string // for RoleTool messages: correlates with ToolCall.ID
 }
 
 // ToolCall represents a request to invoke a tool.
@@ -44,5 +45,22 @@ func NewMessage(role Role, content string) Message {
 		Role:      role,
 		Content:   content,
 		Timestamp: time.Now(),
+	}
+}
+
+// NewToolResultMessage creates a RoleTool message carrying the result of a tool invocation.
+// toolCallID correlates with the ToolCall.ID that triggered the execution.
+// If isError is true, the content is prefixed with "ERROR: ".
+func NewToolResultMessage(toolCallID string, content string, isError bool) Message {
+	c := content
+	if isError {
+		c = "ERROR: " + content
+	}
+	return Message{
+		ID:         uuid.New().String(),
+		Role:       RoleTool,
+		Content:    c,
+		Timestamp:  time.Now(),
+		ToolCallID: toolCallID,
 	}
 }

@@ -19,9 +19,9 @@ import (
 var _ provider.LLMProvider = (*Provider)(nil)
 
 const (
-	baseURL   = "https://openrouter.ai/api/v1"
+	baseURL     = "https://openrouter.ai/api/v1"
 	httpReferer = "https://github.com/HyperBlaze456/ssenrah"
-	appTitle  = "ssenrah"
+	appTitle    = "ssenrah"
 )
 
 // Provider implements provider.LLMProvider for OpenRouter.
@@ -44,21 +44,36 @@ func (p *Provider) Name() string { return "openrouter" }
 // --- OpenAI-compatible wire types ---
 
 type orMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string       `json:"role"`
+	Content    string       `json:"content"`
+	ToolCallID string       `json:"tool_call_id,omitempty"`
+	ToolCalls  []orToolCall `json:"tool_calls,omitempty"`
+}
+
+type orToolDefinition struct {
+	Type     string       `json:"type"`
+	Function orFunctionDef `json:"function"`
+}
+
+type orFunctionDef struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
 }
 
 type orChatRequest struct {
-	Model       string      `json:"model"`
-	Messages    []orMessage `json:"messages"`
-	MaxTokens   int         `json:"max_tokens,omitempty"`
-	Stream      bool        `json:"stream,omitempty"`
-	Temperature *float64    `json:"temperature,omitempty"`
-	TopP        *float64    `json:"top_p,omitempty"`
-	Stop        []string    `json:"stop,omitempty"`
+	Model       string             `json:"model"`
+	Messages    []orMessage        `json:"messages"`
+	MaxTokens   int                `json:"max_tokens,omitempty"`
+	Stream      bool               `json:"stream,omitempty"`
+	Temperature *float64           `json:"temperature,omitempty"`
+	TopP        *float64           `json:"top_p,omitempty"`
+	Stop        []string           `json:"stop,omitempty"`
+	Tools       []orToolDefinition `json:"tools,omitempty"`
 }
 
 type orToolCall struct {
+	Index    int    `json:"index"`
 	ID       string `json:"id"`
 	Type     string `json:"type"`
 	Function struct {
@@ -136,16 +151,33 @@ func buildMessages(systemPrompt string, messages []shared.Message) []orMessage {
 		out = append(out, orMessage{Role: "system", Content: systemPrompt})
 	}
 	for _, m := range messages {
-		out = append(out, orMessage{Role: string(m.Role), Content: m.Content})
+		msg := orMessage{Role: string(m.Role), Content: m.Content}
+		if m.Role == shared.RoleTool && m.ToolCallID != "" {
+			msg.ToolCallID = m.ToolCallID
+		}
+		if m.Role == shared.RoleAssistant && len(m.ToolCalls) > 0 {
+			for _, tc := range m.ToolCalls {
+				args, _ := json.Marshal(tc.Input)
+				msg.ToolCalls = append(msg.ToolCalls, orToolCall{
+					ID:   tc.ID,
+					Type: "function",
+					Function: struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					}{Name: tc.ToolName, Arguments: string(args)},
+				})
+			}
+		}
+		out = append(out, msg)
 	}
 	return out
 }
 
 func buildChatRequest(req provider.ChatRequest, stream bool) orChatRequest {
 	r := orChatRequest{
-		Model:     req.Model,
-		Messages:  buildMessages(req.SystemPrompt, req.Messages),
-		Stream:    stream,
+		Model:    req.Model,
+		Messages: buildMessages(req.SystemPrompt, req.Messages),
+		Stream:   stream,
 	}
 	if req.MaxTokens > 0 {
 		r.MaxTokens = req.MaxTokens
@@ -160,6 +192,20 @@ func buildChatRequest(req provider.ChatRequest, stream bool) orChatRequest {
 	}
 	if len(req.Options.StopSequences) > 0 {
 		r.Stop = req.Options.StopSequences
+	}
+	if len(req.Tools) > 0 {
+		orTools := make([]orToolDefinition, len(req.Tools))
+		for i, t := range req.Tools {
+			orTools[i] = orToolDefinition{
+				Type: "function",
+				Function: orFunctionDef{
+					Name:        t.Name,
+					Description: t.Description,
+					Parameters:  t.Parameters,
+				},
+			}
+		}
+		r.Tools = orTools
 	}
 	return r
 }
@@ -268,8 +314,12 @@ func (p *Provider) ChatStream(ctx context.Context, req provider.ChatRequest, han
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
+	var accumulatedToolCalls []shared.ToolCall
+	var finishReason string
+	// toolCallArgs tracks partial argument JSON fragments keyed by delta index.
+	toolCallArgs := make(map[int]*strings.Builder)
+
 	for scanner.Scan() {
-		// Check for context cancellation between lines.
 		select {
 		case <-ctx.Done():
 			return shared.ErrStreamCancelled
@@ -283,7 +333,19 @@ func (p *Provider) ChatStream(ctx context.Context, req provider.ChatRequest, han
 
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
-			handler(shared.StreamChunk{Done: true})
+			// Finalise accumulated tool call argument strings.
+			for i, builder := range toolCallArgs {
+				if i < len(accumulatedToolCalls) && builder.Len() > 0 {
+					var input map[string]any
+					_ = json.Unmarshal([]byte(builder.String()), &input)
+					accumulatedToolCalls[i].Input = input
+				}
+			}
+			handler(shared.StreamChunk{
+				Done:       true,
+				ToolCalls:  accumulatedToolCalls,
+				StopReason: finishReason,
+			})
 			return nil
 		}
 
@@ -297,7 +359,33 @@ func (p *Provider) ChatStream(ctx context.Context, req provider.ChatRequest, han
 			continue
 		}
 
-		delta := chunk.Choices[0].Delta.Content
+		choice := chunk.Choices[0]
+
+		// Track finish reason.
+		if choice.FinishReason != nil {
+			finishReason = *choice.FinishReason
+		}
+
+		// Accumulate tool calls from delta.
+		for _, tc := range choice.Delta.ToolCalls {
+			idx := tc.Index
+			for len(accumulatedToolCalls) <= idx {
+				accumulatedToolCalls = append(accumulatedToolCalls, shared.ToolCall{})
+				toolCallArgs[len(accumulatedToolCalls)-1] = &strings.Builder{}
+			}
+			if tc.ID != "" {
+				accumulatedToolCalls[idx].ID = tc.ID
+			}
+			if tc.Function.Name != "" {
+				accumulatedToolCalls[idx].ToolName = tc.Function.Name
+			}
+			if tc.Function.Arguments != "" {
+				toolCallArgs[idx].WriteString(tc.Function.Arguments)
+			}
+		}
+
+		// Emit content delta.
+		delta := choice.Delta.Content
 		if delta != "" {
 			handler(shared.StreamChunk{
 				Delta:     delta,

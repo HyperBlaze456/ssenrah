@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/HyperBlaze456/ssenrah/harness/application"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/provider"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/shared"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/tool"
@@ -29,3 +30,9 @@ type ModelSelectedMsg struct{ Model provider.ModelInfo }
 
 // ApprovalRequestMsg shows the tool approval dialog skeleton.
 type ApprovalRequestMsg struct{ Request tool.ApprovalRequest }
+
+// agentEventMsg wraps an AgentEvent from the event channel into a tea.Msg.
+type agentEventMsg struct{ Event application.AgentEvent }
+
+// agentChannelClosedMsg signals the agent event channel was closed.
+type agentChannelClosedMsg struct{}

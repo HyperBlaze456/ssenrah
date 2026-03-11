@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/shared"
+	"github.com/HyperBlaze456/ssenrah/harness/domain/tool"
 )
 
 // Chat renders the scrollable message list with markdown support.
@@ -81,6 +82,47 @@ func (c *Chat) Clear() {
 	c.streamBuf.Reset()
 	c.streaming = false
 	c.refreshContent()
+}
+
+// AddToolCall renders a tool call block in the chat.
+func (c *Chat) AddToolCall(call shared.ToolCall) {
+	argsStr := formatToolArgs(call.Input)
+	content := fmt.Sprintf("[Tool Call] %s\n%s", call.ToolName, argsStr)
+	msg := shared.NewMessage(shared.RoleSystem, content)
+	c.messages = append(c.messages, msg)
+	c.refreshContent()
+}
+
+// AddToolResult renders a tool result block in the chat.
+func (c *Chat) AddToolResult(call shared.ToolCall, result tool.ToolResult) {
+	prefix := "[Result]"
+	if result.IsError {
+		prefix = "[Error]"
+	}
+	content := result.Content
+	if len(content) > 2000 {
+		content = content[:2000] + "\n... (truncated)"
+	}
+	display := fmt.Sprintf("%s %s:\n%s", prefix, call.ToolName, content)
+	msg := shared.NewMessage(shared.RoleSystem, display)
+	c.messages = append(c.messages, msg)
+	c.refreshContent()
+}
+
+// formatToolArgs formats tool input parameters for display.
+func formatToolArgs(input map[string]any) string {
+	if len(input) == 0 {
+		return "  (no arguments)"
+	}
+	var sb strings.Builder
+	for k, v := range input {
+		val := fmt.Sprintf("%v", v)
+		if len(val) > 200 {
+			val = val[:200] + "..."
+		}
+		sb.WriteString(fmt.Sprintf("  %s: %s\n", k, val))
+	}
+	return sb.String()
 }
 
 // Update handles viewport scrolling.
