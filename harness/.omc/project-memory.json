@@ -1,0 +1,296 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1773382352475,
+  "projectRoot": "/mnt/c/Users/hht63/Desktop/GitHub/ssenrah/harness",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Go",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "go.mod"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "go",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "docs"
+    ],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "application": {
+      "path": "application",
+      "purpose": null,
+      "fileCount": 4,
+      "lastAccessed": 1773382352386,
+      "keyFiles": [
+        "agent.go",
+        "agent_test.go",
+        "chat.go",
+        "session.go"
+      ]
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 1,
+      "lastAccessed": 1773382352395,
+      "keyFiles": [
+        "v03-agent-loop.md"
+      ]
+    },
+    "domain": {
+      "path": "domain",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1773382352403,
+      "keyFiles": []
+    },
+    "hooks": {
+      "path": "hooks",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1773382352411,
+      "keyFiles": [
+        "README.md"
+      ]
+    },
+    "infrastructure": {
+      "path": "infrastructure",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1773382352419,
+      "keyFiles": [
+        "factory.go"
+      ]
+    },
+    "prompts": {
+      "path": "prompts",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1773382352426,
+      "keyFiles": [
+        "default.md"
+      ]
+    },
+    "tui": {
+      "path": "tui",
+      "purpose": null,
+      "fileCount": 11,
+      "lastAccessed": 1773382352435,
+      "keyFiles": [
+        "app.go",
+        "approval.go",
+        "chat.go",
+        "input.go",
+        "keys.go"
+      ]
+    },
+    "infrastructure/config": {
+      "path": "infrastructure/config",
+      "purpose": "Configuration files",
+      "fileCount": 2,
+      "lastAccessed": 1773382352466,
+      "keyFiles": [
+        "config.go",
+        "defaults.go"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "",
+      "accessCount": 10,
+      "lastAccessed": 1773388116853,
+      "type": "directory"
+    },
+    {
+      "path": "application/agent.go",
+      "accessCount": 9,
+      "lastAccessed": 1773388227174,
+      "type": "file"
+    },
+    {
+      "path": "application/agent_test.go",
+      "accessCount": 9,
+      "lastAccessed": 1773388227437,
+      "type": "file"
+    },
+    {
+      "path": "tui/app.go",
+      "accessCount": 7,
+      "lastAccessed": 1773388035029,
+      "type": "file"
+    },
+    {
+      "path": "main.go",
+      "accessCount": 6,
+      "lastAccessed": 1773388093806,
+      "type": "file"
+    },
+    {
+      "path": "tui/sidebar.go",
+      "accessCount": 5,
+      "lastAccessed": 1773388054098,
+      "type": "file"
+    },
+    {
+      "path": "tui/statusbar.go",
+      "accessCount": 5,
+      "lastAccessed": 1773388069213,
+      "type": "file"
+    },
+    {
+      "path": "infrastructure/logging/event_logger.go",
+      "accessCount": 5,
+      "lastAccessed": 1773388240384,
+      "type": "file"
+    },
+    {
+      "path": "domain/policy/engine.go",
+      "accessCount": 4,
+      "lastAccessed": 1773387229893,
+      "type": "file"
+    },
+    {
+      "path": "domain/policy/models.go",
+      "accessCount": 4,
+      "lastAccessed": 1773387246085,
+      "type": "file"
+    },
+    {
+      "path": "infrastructure/factory.go",
+      "accessCount": 4,
+      "lastAccessed": 1773387985883,
+      "type": "file"
+    },
+    {
+      "path": "domain/policy/port.go",
+      "accessCount": 3,
+      "lastAccessed": 1773385153379,
+      "type": "file"
+    },
+    {
+      "path": "domain/event/port.go",
+      "accessCount": 3,
+      "lastAccessed": 1773385154338,
+      "type": "file"
+    },
+    {
+      "path": "domain/event/models.go",
+      "accessCount": 3,
+      "lastAccessed": 1773385154789,
+      "type": "file"
+    },
+    {
+      "path": "infrastructure/config/yaml_config.go",
+      "accessCount": 3,
+      "lastAccessed": 1773387246339,
+      "type": "file"
+    },
+    {
+      "path": "infrastructure/config/config.go",
+      "accessCount": 3,
+      "lastAccessed": 1773387246548,
+      "type": "file"
+    },
+    {
+      "path": "domain/agent/models.go",
+      "accessCount": 3,
+      "lastAccessed": 1773388240082,
+      "type": "file"
+    },
+    {
+      "path": "domain/tool/registry.go",
+      "accessCount": 3,
+      "lastAccessed": 1773388251893,
+      "type": "file"
+    },
+    {
+      "path": "go.mod",
+      "accessCount": 2,
+      "lastAccessed": 1773384755586,
+      "type": "file"
+    },
+    {
+      "path": "infrastructure/config/defaults.go",
+      "accessCount": 2,
+      "lastAccessed": 1773387247055,
+      "type": "file"
+    },
+    {
+      "path": "domain/shared/message.go",
+      "accessCount": 1,
+      "lastAccessed": 1773384735265,
+      "type": "file"
+    },
+    {
+      "path": "infrastructure/config/defaults.yaml",
+      "accessCount": 1,
+      "lastAccessed": 1773384760918,
+      "type": "file"
+    },
+    {
+      "path": "domain/policy/engine_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1773384763129,
+      "type": "file"
+    },
+    {
+      "path": "infrastructure/config/yaml_config_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1773384786053,
+      "type": "file"
+    },
+    {
+      "path": "infrastructure/logging/event_logger_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1773384792916,
+      "type": "file"
+    },
+    {
+      "path": "domain/tool/models.go",
+      "accessCount": 1,
+      "lastAccessed": 1773385022808,
+      "type": "file"
+    },
+    {
+      "path": "domain/agent/port.go",
+      "accessCount": 1,
+      "lastAccessed": 1773385155399,
+      "type": "file"
+    },
+    {
+      "path": "application/policy_integration_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1773388310282,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

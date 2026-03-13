@@ -1,0 +1,311 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1773382408978,
+  "projectRoot": "/mnt/c/Users/hht63/Desktop/GitHub/ssenrah",
+  "techStack": {
+    "languages": [],
+    "frameworks": [],
+    "packageManager": "npm",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "app",
+      "docs"
+    ],
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "app": {
+      "path": "app",
+      "purpose": "Application code",
+      "fileCount": 9,
+      "lastAccessed": 1773382408893,
+      "keyFiles": [
+        "components.json",
+        "index.html",
+        "package-lock.json",
+        "package.json",
+        "postcss.config.js"
+      ]
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 0,
+      "lastAccessed": 1773382408902,
+      "keyFiles": []
+    },
+    "harness": {
+      "path": "harness",
+      "purpose": null,
+      "fileCount": 4,
+      "lastAccessed": 1773382408911,
+      "keyFiles": [
+        "go.mod",
+        "go.sum",
+        "harness",
+        "main.go"
+      ]
+    },
+    "app/dist": {
+      "path": "app/dist",
+      "purpose": "Distribution/build output",
+      "fileCount": 1,
+      "lastAccessed": 1773382408927,
+      "keyFiles": [
+        "index.html"
+      ]
+    },
+    "app/node_modules": {
+      "path": "app/node_modules",
+      "purpose": "Dependencies",
+      "fileCount": 1,
+      "lastAccessed": 1773382408940,
+      "keyFiles": []
+    },
+    "app/public": {
+      "path": "app/public",
+      "purpose": "Public files",
+      "fileCount": 1,
+      "lastAccessed": 1773382408950,
+      "keyFiles": [
+        "logo.png"
+      ]
+    },
+    "app/src": {
+      "path": "app/src",
+      "purpose": "Source code",
+      "fileCount": 5,
+      "lastAccessed": 1773382408961,
+      "keyFiles": [
+        "App.css",
+        "App.tsx",
+        "index.css"
+      ]
+    },
+    "harness/docs": {
+      "path": "harness/docs",
+      "purpose": "Documentation",
+      "fileCount": 1,
+      "lastAccessed": 1773382408978,
+      "keyFiles": [
+        "v03-agent-loop.md"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "",
+      "accessCount": 13,
+      "lastAccessed": 1773383927754,
+      "type": "directory"
+    },
+    {
+      "path": "harness/domain/policy/models.go",
+      "accessCount": 8,
+      "lastAccessed": 1773384621316,
+      "type": "file"
+    },
+    {
+      "path": "harness/domain/agent/models.go",
+      "accessCount": 8,
+      "lastAccessed": 1773384642009,
+      "type": "file"
+    },
+    {
+      "path": "harness/tui/app.go",
+      "accessCount": 7,
+      "lastAccessed": 1773383951621,
+      "type": "file"
+    },
+    {
+      "path": "harness/application/agent.go",
+      "accessCount": 6,
+      "lastAccessed": 1773383949868,
+      "type": "file"
+    },
+    {
+      "path": "harness/application/agent_test.go",
+      "accessCount": 6,
+      "lastAccessed": 1773383950214,
+      "type": "file"
+    },
+    {
+      "path": "harness/domain/policy/port.go",
+      "accessCount": 6,
+      "lastAccessed": 1773383951307,
+      "type": "file"
+    },
+    {
+      "path": "harness/main.go",
+      "accessCount": 6,
+      "lastAccessed": 1773383952481,
+      "type": "file"
+    },
+    {
+      "path": "harness/domain/tool/models.go",
+      "accessCount": 6,
+      "lastAccessed": 1773383961494,
+      "type": "file"
+    },
+    {
+      "path": "harness/domain/event/models.go",
+      "accessCount": 6,
+      "lastAccessed": 1773383962397,
+      "type": "file"
+    },
+    {
+      "path": "harness/domain/event/port.go",
+      "accessCount": 6,
+      "lastAccessed": 1773383963316,
+      "type": "file"
+    },
+    {
+      "path": "harness/infrastructure/config/config.go",
+      "accessCount": 6,
+      "lastAccessed": 1773383971532,
+      "type": "file"
+    },
+    {
+      "path": "harness/domain/tool/registry.go",
+      "accessCount": 5,
+      "lastAccessed": 1773383951808,
+      "type": "file"
+    },
+    {
+      "path": "harness/infrastructure/factory.go",
+      "accessCount": 5,
+      "lastAccessed": 1773383962024,
+      "type": "file"
+    },
+    {
+      "path": "harness/domain/agent/port.go",
+      "accessCount": 4,
+      "lastAccessed": 1773383303274,
+      "type": "file"
+    },
+    {
+      "path": "harness/infrastructure/config/defaults.go",
+      "accessCount": 4,
+      "lastAccessed": 1773383313998,
+      "type": "file"
+    },
+    {
+      "path": "harness",
+      "accessCount": 4,
+      "lastAccessed": 1773383328587,
+      "type": "directory"
+    },
+    {
+      "path": "harness/domain/tool/port.go",
+      "accessCount": 4,
+      "lastAccessed": 1773383337398,
+      "type": "file"
+    },
+    {
+      "path": "harness/go.mod",
+      "accessCount": 3,
+      "lastAccessed": 1773383319706,
+      "type": "file"
+    },
+    {
+      "path": "harness/domain/shared/message.go",
+      "accessCount": 3,
+      "lastAccessed": 1773383336992,
+      "type": "file"
+    },
+    {
+      "path": "harness/tui/sidebar.go",
+      "accessCount": 3,
+      "lastAccessed": 1773383953583,
+      "type": "file"
+    },
+    {
+      "path": "harness/tui/approval.go",
+      "accessCount": 3,
+      "lastAccessed": 1773383971456,
+      "type": "file"
+    },
+    {
+      "path": "harness/tui/messages.go",
+      "accessCount": 2,
+      "lastAccessed": 1773383075326,
+      "type": "file"
+    },
+    {
+      "path": "harness/application/chat.go",
+      "accessCount": 2,
+      "lastAccessed": 1773383091263,
+      "type": "file"
+    },
+    {
+      "path": "harness/infrastructure/dummy/provider.go",
+      "accessCount": 1,
+      "lastAccessed": 1773382742874,
+      "type": "file"
+    },
+    {
+      "path": "harness/infrastructure/prompt/loader.go",
+      "accessCount": 1,
+      "lastAccessed": 1773382743571,
+      "type": "file"
+    },
+    {
+      "path": "harness/application/session.go",
+      "accessCount": 1,
+      "lastAccessed": 1773382752587,
+      "type": "file"
+    },
+    {
+      "path": "harness/domain/session/session.go",
+      "accessCount": 1,
+      "lastAccessed": 1773382752762,
+      "type": "file"
+    },
+    {
+      "path": "harness/domain/conversation/conversation.go",
+      "accessCount": 1,
+      "lastAccessed": 1773383083568,
+      "type": "file"
+    },
+    {
+      "path": "harness/domain/shared/errors.go",
+      "accessCount": 1,
+      "lastAccessed": 1773383084913,
+      "type": "file"
+    },
+    {
+      "path": "harness/tui/statusbar.go",
+      "accessCount": 1,
+      "lastAccessed": 1773383320630,
+      "type": "file"
+    },
+    {
+      "path": "harness/tui/input.go",
+      "accessCount": 1,
+      "lastAccessed": 1773383321038,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

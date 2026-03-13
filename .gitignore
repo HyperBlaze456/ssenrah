@@ -8,9 +8,6 @@ harness/package-lock.json
 .env
 .env.*
 
-.omc/
-.omx/
-
 # GUI app
 app/node_modules/
 app/dist/

@@ -1,0 +1,7 @@
+{
+  "tool_name": "Read",
+  "tool_input_preview": "{\"file_path\":\"/mnt/c/Users/hht63/Desktop/GitHub/ssenrah/harness/harness/internal/domain/agent_test.go\"}",
+  "error": "ENOTDIR: not a directory, statx '/mnt/c/Users/hht63/Desktop/GitHub/ssenrah/harness/harness/internal/domain/agent_test.go'",
+  "timestamp": "2026-03-13T06:38:58.277Z",
+  "retry_count": 2
+}

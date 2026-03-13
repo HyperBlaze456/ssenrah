@@ -1,0 +1,7 @@
+{
+  "tool_name": "Read",
+  "tool_input_preview": "{\"file_path\":\"/mnt/c/Users/hht63/Desktop/GitHub/ssenrah/harness/infrastructure/prompt/prompt.go\"}",
+  "error": "File does not exist. Note: your current working directory is /mnt/c/Users/hht63/Desktop/GitHub/ssenrah/harness.",
+  "timestamp": "2026-03-13T07:34:14.504Z",
+  "retry_count": 4
+}

@@ -1,0 +1,9 @@
+{
+  "session_id": "omx-1773122108943-5htg2s",
+  "started_at": "2026-03-10T05:55:20.865Z",
+  "cwd": "/mnt/c/Users/hht63/Desktop/GitHub/ssenrah",
+  "pid": 2581,
+  "platform": "linux",
+  "pid_start_ticks": 90372,
+  "pid_cmdline": "node /home/hyperblaze/.nvm/versions/node/v24.12.0/bin/omx --madmax"
+}
