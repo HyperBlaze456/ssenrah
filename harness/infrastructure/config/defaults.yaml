@@ -1,0 +1,45 @@
+app:
+  model: "dummy-v1"
+  provider: "dummy"
+  theme: "dark"
+  sidebar_open: true
+
+policy_tiers:
+  supervised:
+    description: "All tool calls require explicit user approval"
+    default_action: "ask"
+    tool_rules: {}
+  balanced:
+    description: "Safe tools auto-approve, risky tools require approval"
+    default_action: "ask"
+    tool_rules:
+      read_file:
+        action: "allow"
+        reason: "Read-only file access is safe"
+  autonomous:
+    description: "Most tools auto-approve, only destructive ops require approval"
+    default_action: "allow"
+    tool_rules:
+      bash:
+        action: "ask"
+        reason: "Shell commands can have side effects"
+  yolo:
+    description: "All tools auto-approve without user interaction"
+    default_action: "allow"
+    tool_rules: {}
+
+agent_types:
+  default:
+    description: "General-purpose agent with all tools"
+    model: "dummy-v1"
+    policy_tier: "supervised"
+    tools: ["read_file", "write_file", "bash"]
+    system_prompt: "You are ssenrah, a helpful AI assistant running inside a terminal-based agent harness.\nRespond in markdown format. Use code blocks with language tags for code."
+    max_turns: 10
+  reader:
+    description: "Read-only agent for code analysis"
+    model: "dummy-v1"
+    policy_tier: "balanced"
+    tools: ["read_file"]
+    system_prompt: "You are ssenrah in read-only mode. You can read files to analyze code but cannot modify anything.\nRespond in markdown format."
+    max_turns: 5

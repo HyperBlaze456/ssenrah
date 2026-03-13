@@ -6,9 +6,10 @@ import (
 
 // StatusBar renders the bottom status line with key hints.
 type StatusBar struct {
-	phase string
-	theme theme
-	width int
+	phase      string
+	policyTier string
+	theme      theme
+	width      int
 }
 
 // NewStatusBar creates a StatusBar.
@@ -22,6 +23,9 @@ func (s *StatusBar) SetWidth(width int) { s.width = width }
 // SetPhase updates the current phase.
 func (s *StatusBar) SetPhase(phase string) { s.phase = phase }
 
+// SetPolicyTier updates the displayed policy tier.
+func (s *StatusBar) SetPolicyTier(tier string) { s.policyTier = tier }
+
 // View renders the status bar.
 func (s *StatusBar) View() string {
 	var hints string
@@ -34,7 +38,11 @@ func (s *StatusBar) View() string {
 		hints = "Enter: send | Tab: sidebar | Ctrl+C: quit"
 	}
 
-	left := s.theme.StatusBar.Render(" ssenrah ")
+	tierInfo := ""
+	if s.policyTier != "" {
+		tierInfo = " [" + s.policyTier + "]"
+	}
+	left := s.theme.StatusBar.Render(" ssenrah" + tierInfo + " ")
 	right := lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render(hints)
 
 	gap := s.width - lipgloss.Width(left) - lipgloss.Width(right)

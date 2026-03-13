@@ -8,9 +8,12 @@ import (
 	"testing"
 
 	"github.com/HyperBlaze456/ssenrah/harness/domain/conversation"
+	"github.com/HyperBlaze456/ssenrah/harness/domain/event"
+	"github.com/HyperBlaze456/ssenrah/harness/domain/policy"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/provider"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/shared"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/tool"
+	"github.com/HyperBlaze456/ssenrah/harness/infrastructure/logging"
 )
 
 // --- Test Helpers ---
@@ -129,6 +132,19 @@ func countEventType[T AgentEvent](events []AgentEvent) int {
 	return count
 }
 
+// newTestAgentService creates an AgentService with a supervised (ask-all) policy for tests.
+// This preserves v0.3 behavior: every tool call triggers EventApprovalNeeded.
+func newTestAgentService(conv *conversation.Conversation, prov provider.LLMProvider, reg *tool.Registry, prompt string) (*AgentService, *logging.MemoryEventLogger) {
+	engine := policy.NewPolicyEngine()
+	profile := policy.PolicyProfile{
+		Name:          "supervised",
+		DefaultAction: policy.AwaitUser,
+		ToolRules:     map[string]policy.ToolRule{},
+	}
+	logger := logging.NewMemoryEventLogger()
+	return NewAgentService(conv, prov, reg, prompt, engine, profile, logger), logger
+}
+
 // --- Tests ---
 
 func TestAgentService_SingleTurn(t *testing.T) {
@@ -144,7 +160,7 @@ func TestAgentService_SingleTurn(t *testing.T) {
 
 	conv := conversation.New()
 	reg := tool.NewRegistry()
-	agent := NewAgentService(conv, prov, reg, "You are helpful.")
+	agent, _ := newTestAgentService(conv, prov, reg, "You are helpful.")
 	agent.SetModel("test-model")
 
 	userMsg := shared.NewMessage(shared.RoleUser, "Hi there")
@@ -228,7 +244,7 @@ func TestAgentService_ToolCall_Approved(t *testing.T) {
 	})
 
 	conv := conversation.New()
-	agent := NewAgentService(conv, prov, reg, "You are helpful.")
+	agent, _ := newTestAgentService(conv, prov, reg, "You are helpful.")
 
 	userMsg := shared.NewMessage(shared.RoleUser, "Read my file")
 	events := collectEvents(context.Background(), agent, userMsg, func(ev EventApprovalNeeded) ApprovalResponse {
@@ -308,7 +324,7 @@ func TestAgentService_ToolCall_Denied(t *testing.T) {
 	})
 
 	conv := conversation.New()
-	agent := NewAgentService(conv, prov, reg, "You are helpful.")
+	agent, _ := newTestAgentService(conv, prov, reg, "You are helpful.")
 
 	userMsg := shared.NewMessage(shared.RoleUser, "Delete everything")
 	events := collectEvents(context.Background(), agent, userMsg, func(ev EventApprovalNeeded) ApprovalResponse {
@@ -391,7 +407,7 @@ func TestAgentService_AlwaysAllow(t *testing.T) {
 	})
 
 	conv := conversation.New()
-	agent := NewAgentService(conv, prov, reg, "You are helpful.")
+	agent, _ := newTestAgentService(conv, prov, reg, "You are helpful.")
 
 	userMsg := shared.NewMessage(shared.RoleUser, "Read two files")
 	approvalCount := 0
@@ -448,7 +464,7 @@ func TestAgentService_MaxTurns(t *testing.T) {
 	})
 
 	conv := conversation.New()
-	agent := NewAgentService(conv, prov, reg, "You are helpful.")
+	agent, _ := newTestAgentService(conv, prov, reg, "You are helpful.")
 	agent.SetMaxTurns(2)
 
 	userMsg := shared.NewMessage(shared.RoleUser, "Keep going")
@@ -479,7 +495,7 @@ func TestAgentService_EmptyMessage(t *testing.T) {
 	prov := &mockProvider{name: "test"}
 	conv := conversation.New()
 	reg := tool.NewRegistry()
-	agent := NewAgentService(conv, prov, reg, "You are helpful.")
+	agent, _ := newTestAgentService(conv, prov, reg, "You are helpful.")
 
 	userMsg := shared.NewMessage(shared.RoleUser, "   ")
 	events := collectEvents(context.Background(), agent, userMsg, nil)
@@ -527,7 +543,7 @@ func TestAgentService_ContextCancellation(t *testing.T) {
 	})
 
 	conv := conversation.New()
-	agent := NewAgentService(conv, prov, reg, "You are helpful.")
+	agent, _ := newTestAgentService(conv, prov, reg, "You are helpful.")
 
 	userMsg := shared.NewMessage(shared.RoleUser, "Do something")
 
@@ -569,7 +585,7 @@ func TestAgentService_UnknownTool(t *testing.T) {
 	// Empty registry -- no tools registered
 	reg := tool.NewRegistry()
 	conv := conversation.New()
-	agent := NewAgentService(conv, prov, reg, "You are helpful.")
+	agent, _ := newTestAgentService(conv, prov, reg, "You are helpful.")
 
 	userMsg := shared.NewMessage(shared.RoleUser, "Use a tool")
 	events := collectEvents(context.Background(), agent, userMsg, func(ev EventApprovalNeeded) ApprovalResponse {
@@ -632,7 +648,7 @@ func TestAgentService_ToolExecutionError(t *testing.T) {
 	})
 
 	conv := conversation.New()
-	agent := NewAgentService(conv, prov, reg, "You are helpful.")
+	agent, _ := newTestAgentService(conv, prov, reg, "You are helpful.")
 
 	userMsg := shared.NewMessage(shared.RoleUser, "Run the tool")
 	events := collectEvents(context.Background(), agent, userMsg, func(ev EventApprovalNeeded) ApprovalResponse {
@@ -667,6 +683,468 @@ func TestAgentService_ToolExecutionError(t *testing.T) {
 	}
 	if !foundErr {
 		t.Error("expected tool execution error in conversation history")
+	}
+}
+
+func TestAgentService_PolicyAllow_NoApproval(t *testing.T) {
+	var callCount atomic.Int32
+
+	prov := &mockProvider{
+		name: "test",
+		streamFn: func(_ context.Context, _ provider.ChatRequest, handler provider.StreamHandler) error {
+			n := callCount.Add(1)
+			if n == 1 {
+				handler(shared.StreamChunk{
+					Done:       true,
+					StopReason: "tool_use",
+					ToolCalls: []shared.ToolCall{
+						{ID: "call-1", ToolName: "read_file", Input: map[string]any{"path": "/tmp/test"}},
+					},
+				})
+			} else {
+				handler(shared.StreamChunk{Delta: "Done."})
+				handler(shared.StreamChunk{Done: true, StopReason: "end_turn"})
+			}
+			return nil
+		},
+	}
+
+	reg := tool.NewRegistry()
+	_ = reg.Register(&mockTool{
+		name:   "read_file",
+		desc:   "Reads a file",
+		schema: tool.ParameterSchema{},
+		execFn: func(_ context.Context, _ map[string]any) (tool.ToolResult, error) {
+			return tool.ToolResult{Content: "file data", IsError: false}, nil
+		},
+	})
+
+	engine := policy.NewPolicyEngine()
+	profile := policy.PolicyProfile{
+		Name:          "autonomous",
+		DefaultAction: policy.Allow,
+		ToolRules:     map[string]policy.ToolRule{},
+	}
+	logger := logging.NewMemoryEventLogger()
+
+	conv := conversation.New()
+	agent := NewAgentService(conv, prov, reg, "You are helpful.", engine, profile, logger)
+
+	userMsg := shared.NewMessage(shared.RoleUser, "Read file")
+	events := collectEvents(context.Background(), agent, userMsg, nil)
+
+	// Should NOT have any approval requests
+	if hasEventType[EventApprovalNeeded](events) {
+		t.Error("autonomous tier should not emit EventApprovalNeeded for allowed tools")
+	}
+
+	// Should have tool result
+	if !hasEventType[EventToolResult](events) {
+		t.Error("expected EventToolResult")
+	}
+
+	// Should complete
+	if !hasEventType[EventDone](events) {
+		t.Fatal("expected EventDone")
+	}
+
+	// Verify policy event logged
+	policyEvents := logger.EventsByType(event.EventPolicyEval)
+	if len(policyEvents) != 1 {
+		t.Errorf("expected 1 policy event, got %d", len(policyEvents))
+	}
+}
+
+func TestAgentService_PolicyDeny_NeverExecutes(t *testing.T) {
+	var callCount atomic.Int32
+
+	prov := &mockProvider{
+		name: "test",
+		streamFn: func(_ context.Context, _ provider.ChatRequest, handler provider.StreamHandler) error {
+			n := callCount.Add(1)
+			if n == 1 {
+				handler(shared.StreamChunk{
+					Done:       true,
+					StopReason: "tool_use",
+					ToolCalls: []shared.ToolCall{
+						{ID: "call-1", ToolName: "bash", Input: map[string]any{"cmd": "rm -rf /"}},
+					},
+				})
+			} else {
+				handler(shared.StreamChunk{Delta: "Understood."})
+				handler(shared.StreamChunk{Done: true, StopReason: "end_turn"})
+			}
+			return nil
+		},
+	}
+
+	reg := tool.NewRegistry()
+	toolExecuted := false
+	_ = reg.Register(&mockTool{
+		name:   "bash",
+		desc:   "Shell",
+		schema: tool.ParameterSchema{},
+		execFn: func(_ context.Context, _ map[string]any) (tool.ToolResult, error) {
+			toolExecuted = true
+			return tool.ToolResult{Content: "ok"}, nil
+		},
+	})
+
+	engine := policy.NewPolicyEngine()
+	profile := policy.PolicyProfile{
+		Name:          "restricted",
+		DefaultAction: policy.AwaitUser,
+		ToolRules: map[string]policy.ToolRule{
+			"bash": {Action: policy.Deny, Reason: "Shell commands are not allowed"},
+		},
+	}
+	logger := logging.NewMemoryEventLogger()
+
+	conv := conversation.New()
+	agent := NewAgentService(conv, prov, reg, "You are helpful.", engine, profile, logger)
+
+	userMsg := shared.NewMessage(shared.RoleUser, "Delete everything")
+	events := collectEvents(context.Background(), agent, userMsg, nil)
+
+	if toolExecuted {
+		t.Error("denied tool should never have been executed")
+	}
+
+	// Should NOT have approval request (Deny skips approval)
+	if hasEventType[EventApprovalNeeded](events) {
+		t.Error("denied tool should not trigger EventApprovalNeeded")
+	}
+
+	// Should complete
+	if !hasEventType[EventDone](events) {
+		t.Fatal("expected EventDone")
+	}
+
+	// Verify denial in conversation
+	history := conv.History()
+	foundDenial := false
+	for _, msg := range history {
+		if msg.Role == shared.RoleTool && containsStr(msg.Content, "denied by policy") {
+			foundDenial = true
+		}
+	}
+	if !foundDenial {
+		t.Error("expected policy denial message in conversation history")
+	}
+}
+
+func TestAgentService_PolicyAsk_ShowsApproval(t *testing.T) {
+	var callCount atomic.Int32
+
+	prov := &mockProvider{
+		name: "test",
+		streamFn: func(_ context.Context, _ provider.ChatRequest, handler provider.StreamHandler) error {
+			n := callCount.Add(1)
+			if n == 1 {
+				handler(shared.StreamChunk{
+					Done:       true,
+					StopReason: "tool_use",
+					ToolCalls: []shared.ToolCall{
+						{ID: "call-1", ToolName: "write_file", Input: map[string]any{}},
+					},
+				})
+			} else {
+				handler(shared.StreamChunk{Delta: "Done."})
+				handler(shared.StreamChunk{Done: true, StopReason: "end_turn"})
+			}
+			return nil
+		},
+	}
+
+	reg := tool.NewRegistry()
+	_ = reg.Register(&mockTool{
+		name:   "write_file",
+		desc:   "Write file",
+		schema: tool.ParameterSchema{},
+		execFn: func(_ context.Context, _ map[string]any) (tool.ToolResult, error) {
+			return tool.ToolResult{Content: "written", IsError: false}, nil
+		},
+	})
+
+	engine := policy.NewPolicyEngine()
+	profile := policy.PolicyProfile{
+		Name:          "supervised",
+		DefaultAction: policy.AwaitUser,
+		ToolRules:     map[string]policy.ToolRule{},
+	}
+	logger := logging.NewMemoryEventLogger()
+
+	conv := conversation.New()
+	agent := NewAgentService(conv, prov, reg, "You are helpful.", engine, profile, logger)
+
+	userMsg := shared.NewMessage(shared.RoleUser, "Write a file")
+	approvalCount := 0
+	events := collectEvents(context.Background(), agent, userMsg, func(ev EventApprovalNeeded) ApprovalResponse {
+		approvalCount++
+		return ApprovalResponse{Approved: true}
+	})
+
+	if approvalCount != 1 {
+		t.Errorf("supervised tier should prompt for approval, got %d prompts", approvalCount)
+	}
+
+	if !hasEventType[EventDone](events) {
+		t.Fatal("expected EventDone")
+	}
+}
+
+func TestAgentService_PolicySwitch_Runtime(t *testing.T) {
+	prov := &mockProvider{
+		name: "test",
+		streamFn: func(_ context.Context, _ provider.ChatRequest, handler provider.StreamHandler) error {
+			handler(shared.StreamChunk{Delta: "Hello."})
+			handler(shared.StreamChunk{Done: true, StopReason: "end_turn"})
+			return nil
+		},
+	}
+
+	conv := conversation.New()
+	reg := tool.NewRegistry()
+	engine := policy.NewPolicyEngine()
+	supervised := policy.PolicyProfile{
+		Name:          "supervised",
+		DefaultAction: policy.AwaitUser,
+		ToolRules:     map[string]policy.ToolRule{},
+	}
+	logger := logging.NewMemoryEventLogger()
+
+	agent := NewAgentService(conv, prov, reg, "You are helpful.", engine, supervised, logger)
+
+	// Verify initial profile
+	if agent.ActivePolicyProfile().Name != "supervised" {
+		t.Errorf("expected supervised, got %s", agent.ActivePolicyProfile().Name)
+	}
+
+	// Switch to autonomous
+	autonomous := policy.PolicyProfile{
+		Name:          "autonomous",
+		DefaultAction: policy.Allow,
+		ToolRules:     map[string]policy.ToolRule{},
+	}
+	agent.SetPolicyProfile(autonomous)
+
+	if agent.ActivePolicyProfile().Name != "autonomous" {
+		t.Errorf("expected autonomous after switch, got %s", agent.ActivePolicyProfile().Name)
+	}
+}
+
+func TestAgentService_PolicyDecisionLogged(t *testing.T) {
+	var callCount atomic.Int32
+
+	prov := &mockProvider{
+		name: "test",
+		streamFn: func(_ context.Context, _ provider.ChatRequest, handler provider.StreamHandler) error {
+			n := callCount.Add(1)
+			if n == 1 {
+				handler(shared.StreamChunk{
+					Done:       true,
+					StopReason: "tool_use",
+					ToolCalls: []shared.ToolCall{
+						{ID: "call-1", ToolName: "read_file", Input: map[string]any{}},
+						{ID: "call-2", ToolName: "bash", Input: map[string]any{}},
+					},
+				})
+			} else {
+				handler(shared.StreamChunk{Delta: "Done."})
+				handler(shared.StreamChunk{Done: true, StopReason: "end_turn"})
+			}
+			return nil
+		},
+	}
+
+	reg := tool.NewRegistry()
+	_ = reg.Register(&mockTool{
+		name: "read_file", desc: "Read", schema: tool.ParameterSchema{},
+		execFn: func(_ context.Context, _ map[string]any) (tool.ToolResult, error) {
+			return tool.ToolResult{Content: "ok"}, nil
+		},
+	})
+	_ = reg.Register(&mockTool{
+		name: "bash", desc: "Shell", schema: tool.ParameterSchema{},
+		execFn: func(_ context.Context, _ map[string]any) (tool.ToolResult, error) {
+			return tool.ToolResult{Content: "ok"}, nil
+		},
+	})
+
+	engine := policy.NewPolicyEngine()
+	profile := policy.PolicyProfile{
+		Name:          "autonomous",
+		DefaultAction: policy.Allow,
+		ToolRules: map[string]policy.ToolRule{
+			"bash": {Action: policy.AwaitUser, Reason: "Shell commands can have side effects"},
+		},
+	}
+	logger := logging.NewMemoryEventLogger()
+
+	conv := conversation.New()
+	agent := NewAgentService(conv, prov, reg, "You are helpful.", engine, profile, logger)
+
+	userMsg := shared.NewMessage(shared.RoleUser, "Do stuff")
+	_ = collectEvents(context.Background(), agent, userMsg, func(ev EventApprovalNeeded) ApprovalResponse {
+		return ApprovalResponse{Approved: true}
+	})
+
+	// Should have exactly 2 policy events (one per tool call)
+	policyEvents := logger.EventsByType(event.EventPolicyEval)
+	if len(policyEvents) != 2 {
+		t.Errorf("expected 2 policy events, got %d", len(policyEvents))
+	}
+
+	// Verify event data
+	if policyEvents[0].Data["tool_name"] != "read_file" {
+		t.Errorf("expected read_file, got %v", policyEvents[0].Data["tool_name"])
+	}
+	if policyEvents[0].Data["decision"] != "allow" {
+		t.Errorf("expected allow for read_file, got %v", policyEvents[0].Data["decision"])
+	}
+	if policyEvents[1].Data["tool_name"] != "bash" {
+		t.Errorf("expected bash, got %v", policyEvents[1].Data["tool_name"])
+	}
+	if policyEvents[1].Data["decision"] != "ask" {
+		t.Errorf("expected ask for bash, got %v", policyEvents[1].Data["decision"])
+	}
+}
+
+func TestAgentService_PolicySwitch_ClearsAlwaysAllow(t *testing.T) {
+	var callCount atomic.Int32
+
+	prov := &mockProvider{
+		name: "test",
+		streamFn: func(_ context.Context, _ provider.ChatRequest, handler provider.StreamHandler) error {
+			n := callCount.Add(1)
+			if n == 1 {
+				handler(shared.StreamChunk{
+					Done:       true,
+					StopReason: "tool_use",
+					ToolCalls: []shared.ToolCall{
+						{ID: "call-1", ToolName: "read_file", Input: map[string]any{}},
+					},
+				})
+			} else {
+				handler(shared.StreamChunk{Delta: "Done."})
+				handler(shared.StreamChunk{Done: true, StopReason: "end_turn"})
+			}
+			return nil
+		},
+	}
+
+	reg := tool.NewRegistry()
+	_ = reg.Register(&mockTool{
+		name: "read_file", desc: "Read", schema: tool.ParameterSchema{},
+		execFn: func(_ context.Context, _ map[string]any) (tool.ToolResult, error) {
+			return tool.ToolResult{Content: "ok"}, nil
+		},
+	})
+
+	engine := policy.NewPolicyEngine()
+	supervised := policy.PolicyProfile{
+		Name:          "supervised",
+		DefaultAction: policy.AwaitUser,
+		ToolRules:     map[string]policy.ToolRule{},
+	}
+	logger := logging.NewMemoryEventLogger()
+
+	conv := conversation.New()
+	agent := NewAgentService(conv, prov, reg, "You are helpful.", engine, supervised, logger)
+
+	// Run 1: always-allow read_file
+	userMsg := shared.NewMessage(shared.RoleUser, "Read")
+	approvalCount := 0
+	_ = collectEvents(context.Background(), agent, userMsg, func(ev EventApprovalNeeded) ApprovalResponse {
+		approvalCount++
+		return ApprovalResponse{Approved: true, AlwaysAllow: true}
+	})
+
+	if approvalCount != 1 {
+		t.Fatalf("expected 1 approval in run 1, got %d", approvalCount)
+	}
+
+	// Switch policy tier — this should clear alwaysAllow
+	agent.SetPolicyProfile(supervised)
+
+	// Run 2: read_file should require approval again (alwaysAllow was cleared)
+	callCount.Store(0)
+	approvalCount = 0
+	userMsg2 := shared.NewMessage(shared.RoleUser, "Read again")
+	_ = collectEvents(context.Background(), agent, userMsg2, func(ev EventApprovalNeeded) ApprovalResponse {
+		approvalCount++
+		return ApprovalResponse{Approved: true}
+	})
+
+	if approvalCount != 1 {
+		t.Errorf("expected 1 approval after policy switch (alwaysAllow cleared), got %d", approvalCount)
+	}
+}
+
+func TestAgentService_PolicyDeny_SkipsEventToolCall(t *testing.T) {
+	var callCount atomic.Int32
+
+	prov := &mockProvider{
+		name: "test",
+		streamFn: func(_ context.Context, _ provider.ChatRequest, handler provider.StreamHandler) error {
+			n := callCount.Add(1)
+			if n == 1 {
+				handler(shared.StreamChunk{
+					Done:       true,
+					StopReason: "tool_use",
+					ToolCalls: []shared.ToolCall{
+						{ID: "call-1", ToolName: "bash", Input: map[string]any{}},
+					},
+				})
+			} else {
+				handler(shared.StreamChunk{Delta: "OK."})
+				handler(shared.StreamChunk{Done: true, StopReason: "end_turn"})
+			}
+			return nil
+		},
+	}
+
+	reg := tool.NewRegistry()
+	_ = reg.Register(&mockTool{
+		name: "bash", desc: "Shell", schema: tool.ParameterSchema{},
+		execFn: func(_ context.Context, _ map[string]any) (tool.ToolResult, error) {
+			t.Fatal("denied tool should not execute")
+			return tool.ToolResult{}, nil
+		},
+	})
+
+	engine := policy.NewPolicyEngine()
+	profile := policy.PolicyProfile{
+		Name:          "restricted",
+		DefaultAction: policy.Allow,
+		ToolRules: map[string]policy.ToolRule{
+			"bash": {Action: policy.Deny, Reason: "Blocked"},
+		},
+	}
+	logger := logging.NewMemoryEventLogger()
+
+	conv := conversation.New()
+	agent := NewAgentService(conv, prov, reg, "You are helpful.", engine, profile, logger)
+
+	userMsg := shared.NewMessage(shared.RoleUser, "Run bash")
+	events := collectEvents(context.Background(), agent, userMsg, nil)
+
+	// Deny should NOT emit EventToolCall
+	if hasEventType[EventToolCall](events) {
+		t.Error("Deny decision should NOT emit EventToolCall")
+	}
+
+	// Should emit EventToolResult with denial
+	tr, ok := getEvent[EventToolResult](events)
+	if !ok {
+		t.Fatal("expected EventToolResult with denial")
+	}
+	if !tr.Result.IsError {
+		t.Error("denial result should be an error")
+	}
+
+	if !hasEventType[EventDone](events) {
+		t.Fatal("expected EventDone")
 	}
 }
 

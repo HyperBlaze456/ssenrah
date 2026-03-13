@@ -5,10 +5,14 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/HyperBlaze456/ssenrah/harness/domain/agent"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/conversation"
+	"github.com/HyperBlaze456/ssenrah/harness/domain/event"
+	"github.com/HyperBlaze456/ssenrah/harness/domain/policy"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/provider"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/shared"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/tool"
+	"github.com/HyperBlaze456/ssenrah/harness/infrastructure/logging"
 )
 
 // ApprovalResponse carries the user's decision on a tool call.
@@ -88,6 +92,18 @@ type AgentService struct {
 
 	// eventCh is the channel for sending events to the TUI.
 	eventCh chan<- AgentEvent
+
+	// policyEngine evaluates tool calls against the active policy profile.
+	policyEngine policy.PolicyEngine
+
+	// policyProfile is the active policy tier for this session.
+	policyProfile policy.PolicyProfile
+
+	// eventLogger records policy decisions and other events for audit.
+	eventLogger event.EventLogger
+
+	// agentType is the active agent type template (nil = legacy mode).
+	agentType *agent.AgentType
 }
 
 // NewAgentService creates a new AgentService.
@@ -96,14 +112,20 @@ func NewAgentService(
 	prov provider.LLMProvider,
 	reg *tool.Registry,
 	systemPrompt string,
+	engine policy.PolicyEngine,
+	profile policy.PolicyProfile,
+	logger event.EventLogger,
 ) *AgentService {
 	return &AgentService{
-		conversation: conv,
-		provider:     prov,
-		registry:     reg,
-		systemPrompt: systemPrompt,
-		maxTurns:     10, // default max turns
-		alwaysAllow:  make(map[string]bool),
+		conversation:  conv,
+		provider:      prov,
+		registry:      reg,
+		systemPrompt:  systemPrompt,
+		maxTurns:      10,
+		alwaysAllow:   make(map[string]bool),
+		policyEngine:  engine,
+		policyProfile: profile,
+		eventLogger:   logger,
 	}
 }
 
@@ -115,6 +137,39 @@ func (a *AgentService) SetMaxTurns(max int) { a.maxTurns = max }
 
 // SetProvider switches the provider.
 func (a *AgentService) SetProvider(prov provider.LLMProvider) { a.provider = prov }
+
+// SetPolicyProfile switches the active policy tier and clears session approvals.
+func (a *AgentService) SetPolicyProfile(p policy.PolicyProfile) {
+	a.policyProfile = p
+	a.ResetApprovals()
+}
+
+// ActivePolicyProfile returns the current policy profile.
+func (a *AgentService) ActivePolicyProfile() policy.PolicyProfile {
+	return a.policyProfile
+}
+
+// ApplyAgentType switches the agent type, updating model, prompt, policy, and registry.
+func (a *AgentService) ApplyAgentType(at agent.AgentType, profile policy.PolicyProfile, reg *tool.Registry) {
+	a.agentType = &at
+	a.model = at.Model
+	a.systemPrompt = at.SystemPrompt
+	a.maxTurns = at.MaxTurns
+	a.registry = reg
+	a.policyProfile = profile
+	a.ResetApprovals()
+}
+
+// ActiveAgentType returns the current agent type, or nil if in legacy mode.
+func (a *AgentService) ActiveAgentType() *agent.AgentType {
+	return a.agentType
+}
+
+// ResetApprovals clears the session-scoped always-allow map.
+// Called on every policy/agent switch to prevent stale approvals from defeating tier downgrades.
+func (a *AgentService) ResetApprovals() {
+	a.alwaysAllow = make(map[string]bool)
+}
 
 // ProviderName returns the current provider name.
 func (a *AgentService) ProviderName() string { return a.provider.Name() }
@@ -293,7 +348,7 @@ func (a *AgentService) streamTurn(ctx context.Context, req provider.ChatRequest)
 	return msg, usage, nil
 }
 
-// processToolCalls handles each tool call: approval, execution, result.
+// processToolCalls handles each tool call: policy evaluation, approval, execution, result.
 func (a *AgentService) processToolCalls(ctx context.Context, calls []shared.ToolCall) error {
 	for _, tc := range calls {
 		select {
@@ -302,83 +357,108 @@ func (a *AgentService) processToolCalls(ctx context.Context, calls []shared.Tool
 		default:
 		}
 
-		// Emit tool call event
-		a.sendEvent(EventToolCall{Call: tc})
+		// Evaluate policy
+		decision, reason := a.evaluatePolicy(tc)
+		a.logPolicyDecision(tc, decision, reason)
 
-		// Check if auto-approved
-		approved := a.alwaysAllow[tc.ToolName]
-		if !approved {
-			// Request approval from user via channel
-			responseCh := make(chan ApprovalResponse, 1)
-			a.sendEvent(EventApprovalNeeded{
-				Request: tool.ApprovalRequest{
-					ToolCall:  tc,
-					RiskLevel: classifyRisk(tc.ToolName),
-					Reason:    fmt.Sprintf("Agent wants to use %s", tc.ToolName),
-				},
-				ResponseCh: responseCh,
+		switch decision {
+		case policy.Allow:
+			// Auto-approved by policy — emit tool call, execute immediately
+			a.sendEvent(EventToolCall{Call: tc})
+			a.executeTool(ctx, tc)
+
+		case policy.Deny:
+			// Denied by policy — skip EventToolCall, send denial directly
+			deniedMsg := shared.NewToolResultMessage(tc.ID, "Tool execution denied by policy: "+reason, true)
+			a.conversation.Append(deniedMsg)
+			a.sendEvent(EventToolResult{
+				Call:   tc,
+				Result: tool.ToolResult{CallID: tc.ID, Content: "Tool execution denied by policy: " + reason, IsError: true},
 			})
 
-			// Wait for approval (blocks until user responds or context cancelled)
-			select {
-			case <-ctx.Done():
-				return shared.ErrStreamCancelled
-			case resp := <-responseCh:
-				if resp.AlwaysAllow {
-					a.alwaysAllow[tc.ToolName] = true
-					approved = true
-				} else {
-					approved = resp.Approved
+		case policy.AwaitUser:
+			// Policy says ask — emit tool call, then check alwaysAllow or request approval
+			a.sendEvent(EventToolCall{Call: tc})
+
+			approved := a.alwaysAllow[tc.ToolName]
+			if !approved {
+				responseCh := make(chan ApprovalResponse, 1)
+				a.sendEvent(EventApprovalNeeded{
+					Request: tool.ApprovalRequest{
+						ToolCall:  tc,
+						RiskLevel: reason,
+						Reason:    fmt.Sprintf("Agent wants to use %s", tc.ToolName),
+					},
+					ResponseCh: responseCh,
+				})
+
+				select {
+				case <-ctx.Done():
+					return shared.ErrStreamCancelled
+				case resp := <-responseCh:
+					if resp.AlwaysAllow {
+						a.alwaysAllow[tc.ToolName] = true
+						approved = true
+					} else {
+						approved = resp.Approved
+					}
 				}
 			}
+
+			if !approved {
+				deniedMsg := shared.NewToolResultMessage(tc.ID, "Tool execution denied by user.", true)
+				a.conversation.Append(deniedMsg)
+				continue
+			}
+
+			a.executeTool(ctx, tc)
 		}
-
-		if !approved {
-			// Tool denied -- send denial as tool result
-			deniedMsg := shared.NewToolResultMessage(tc.ID, "Tool execution denied by user.", true)
-			a.conversation.Append(deniedMsg)
-			continue
-		}
-
-		// Execute the tool
-		t, exists := a.registry.Get(tc.ToolName)
-		if !exists {
-			errMsg := shared.NewToolResultMessage(tc.ID, fmt.Sprintf("Unknown tool: %s", tc.ToolName), true)
-			a.conversation.Append(errMsg)
-			continue
-		}
-
-		result, err := t.Execute(ctx, tc.Input)
-		if err != nil {
-			errResult := tool.ToolResult{CallID: tc.ID, Content: err.Error(), IsError: true}
-			errMsg := shared.NewToolResultMessage(tc.ID, fmt.Sprintf("Tool execution failed: %v", err), true)
-			a.conversation.Append(errMsg)
-			a.sendEvent(EventToolResult{Call: tc, Result: errResult})
-			continue
-		}
-
-		result.CallID = tc.ID
-
-		// Append tool result to conversation
-		resultMsg := shared.NewToolResultMessage(tc.ID, result.Content, result.IsError)
-		a.conversation.Append(resultMsg)
-
-		// Emit tool result event
-		a.sendEvent(EventToolResult{Call: tc, Result: result})
 	}
 
 	return nil
 }
 
-// classifyRisk returns a risk level based on the tool name.
-func classifyRisk(toolName string) string {
-	switch toolName {
-	case "bash":
-		return "high"
-	case "write_file":
-		return "medium"
-	default:
-		return "low"
+// executeTool runs a tool and handles the result (shared by Allow and AwaitUser paths).
+func (a *AgentService) executeTool(ctx context.Context, tc shared.ToolCall) {
+	t, exists := a.registry.Get(tc.ToolName)
+	if !exists {
+		errMsg := shared.NewToolResultMessage(tc.ID, fmt.Sprintf("Unknown tool: %s", tc.ToolName), true)
+		a.conversation.Append(errMsg)
+		return
+	}
+
+	result, err := t.Execute(ctx, tc.Input)
+	if err != nil {
+		errResult := tool.ToolResult{CallID: tc.ID, Content: err.Error(), IsError: true}
+		errMsg := shared.NewToolResultMessage(tc.ID, fmt.Sprintf("Tool execution failed: %v", err), true)
+		a.conversation.Append(errMsg)
+		a.sendEvent(EventToolResult{Call: tc, Result: errResult})
+		return
+	}
+
+	result.CallID = tc.ID
+	resultMsg := shared.NewToolResultMessage(tc.ID, result.Content, result.IsError)
+	a.conversation.Append(resultMsg)
+	a.sendEvent(EventToolResult{Call: tc, Result: result})
+}
+
+// evaluatePolicy checks the policy engine, falling back to AwaitUser if no engine is configured.
+func (a *AgentService) evaluatePolicy(tc shared.ToolCall) (policy.PolicyDecision, string) {
+	if a.policyEngine == nil {
+		return policy.AwaitUser, "No policy engine configured"
+	}
+	if engine, ok := a.policyEngine.(*policy.DefaultPolicyEngine); ok {
+		return engine.EvaluateWithReason(tc, a.policyProfile)
+	}
+	return a.policyEngine.Evaluate(tc, a.policyProfile), "Policy evaluation"
+}
+
+// logPolicyDecision logs a policy evaluation through the event logger.
+func (a *AgentService) logPolicyDecision(tc shared.ToolCall, decision policy.PolicyDecision, reason string) {
+	if a.eventLogger != nil {
+		a.eventLogger.Log(logging.NewPolicyEvent(
+			tc.ToolName, decision, a.policyProfile.Name, reason,
+		))
 	}
 }
 

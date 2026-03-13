@@ -15,15 +15,17 @@ type ActivityEntry struct {
 
 // Sidebar shows model info, tokens, cost, and activity log.
 type Sidebar struct {
-	model     string
-	provider  string
-	tokens    int
-	cost      float64
-	ctxWindow int
-	activity  []ActivityEntry
-	theme     theme
-	width     int
-	height    int
+	model      string
+	provider   string
+	tokens     int
+	cost       float64
+	ctxWindow  int
+	activity   []ActivityEntry
+	agentType  string
+	policyTier string
+	theme      theme
+	width      int
+	height     int
 }
 
 // NewSidebar creates a Sidebar component.
@@ -57,6 +59,12 @@ func (s *Sidebar) SetUsage(tokens int, cost float64) {
 	s.cost = cost
 }
 
+// SetAgentInfo updates the displayed agent type and policy tier.
+func (s *Sidebar) SetAgentInfo(agentType, policyTier string) {
+	s.agentType = agentType
+	s.policyTier = policyTier
+}
+
 // AddActivity adds an entry to the activity log.
 func (s *Sidebar) AddActivity(entry ActivityEntry) {
 	s.activity = append(s.activity, entry)
@@ -82,6 +90,15 @@ func (s *Sidebar) View() string {
 	sb.WriteString(fmt.Sprintf("  %s\n", truncate(s.model, w-2)))
 	sb.WriteString(fmt.Sprintf("  %s\n", s.provider))
 	sb.WriteString("\n")
+
+	// Agent section
+	if s.agentType != "" {
+		sb.WriteString(s.theme.SidebarTitle.Render(" Agent"))
+		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf("  %s\n", s.agentType))
+		sb.WriteString(fmt.Sprintf("  policy: %s\n", s.policyTier))
+		sb.WriteString("\n")
+	}
 
 	// Tokens section
 	sb.WriteString(s.theme.SidebarTitle.Render(" Tokens"))

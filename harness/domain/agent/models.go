@@ -22,5 +22,18 @@ type AgentConfig struct {
 	Model        string
 	SystemPrompt string
 	ToolPacks    []string
+	PolicyTier   string
+	MaxTurns     int
+}
+
+// AgentType is an immutable template defining an agent's capabilities.
+// Loaded from YAML config. Not modified at runtime.
+type AgentType struct {
+	Name         string
+	Description  string
+	Model        string
+	PolicyTier   string   // references a PolicyProfile by name
+	Tools        []string // tool names this agent is allowed to use
+	SystemPrompt string
 	MaxTurns     int
 }

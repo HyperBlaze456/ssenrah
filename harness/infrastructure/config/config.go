@@ -9,12 +9,12 @@ import (
 
 // AppConfig holds the harness configuration.
 type AppConfig struct {
-	Model       string `json:"model"`
-	Provider    string `json:"provider"`
-	Theme       string `json:"theme"`
-	SidebarOpen bool   `json:"sidebar_open"`
-	MaxTokens   int    `json:"max_tokens,omitempty"`
-	Temperature float64 `json:"temperature,omitempty"`
+	Model       string  `json:"model" yaml:"model"`
+	Provider    string  `json:"provider" yaml:"provider"`
+	Theme       string  `json:"theme" yaml:"theme"`
+	SidebarOpen bool    `json:"sidebar_open" yaml:"sidebar_open"`
+	MaxTokens   int     `json:"max_tokens,omitempty" yaml:"max_tokens,omitempty"`
+	Temperature float64 `json:"temperature,omitempty" yaml:"temperature,omitempty"`
 }
 
 // LoadConfig reads configuration from a JSON file, falling back to defaults

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -10,9 +11,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/HyperBlaze456/ssenrah/harness/application"
+	"github.com/HyperBlaze456/ssenrah/harness/domain/agent"
+	"github.com/HyperBlaze456/ssenrah/harness/domain/policy"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/provider"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/session"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/shared"
+	"github.com/HyperBlaze456/ssenrah/harness/domain/tool"
+	"github.com/HyperBlaze456/ssenrah/harness/infrastructure"
 )
 
 // App is the root Bubbletea model that orchestrates all TUI components.
@@ -41,14 +46,28 @@ type App struct {
 	// Agent loop state
 	agentEventCh       <-chan application.AgentEvent
 	approvalResponseCh chan<- application.ApprovalResponse
+
+	// Policy and agent type runtime state
+	policyProfiles map[string]policy.PolicyProfile
+	agentTypes     map[string]agent.AgentType
+	fullRegistry   *tool.Registry
 }
 
 // NewApp creates the root App model.
-func NewApp(agentSvc *application.AgentService, sessSvc *application.SessionService) *App {
+func NewApp(
+	agentSvc *application.AgentService,
+	sessSvc *application.SessionService,
+	profiles map[string]policy.PolicyProfile,
+	types map[string]agent.AgentType,
+	fullReg *tool.Registry,
+) *App {
 	t := defaultTheme()
 	return &App{
 		agentService:   agentSvc,
 		sessionService: sessSvc,
+		policyProfiles: profiles,
+		agentTypes:     types,
+		fullRegistry:   fullReg,
 		keys:           defaultKeyMap(),
 		theme:          t,
 		sidebarOpen:    true,
@@ -334,7 +353,94 @@ func (a *App) handleSlashCommand(input string) (tea.Cmd, bool) {
 
 	case "/help":
 		a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
-			"/model [name]  — list or switch models\n/provider       — show current provider\n/clear          — clear chat\n/help           — show this help"))
+			"/model [name]   — list or switch models\n/provider        — show current provider\n/policy [tier]   — list or switch policy tiers\n/agent [type]    — list or switch agent types\n/clear           — clear chat\n/help            — show this help"))
+		return nil, true
+
+	case "/policy":
+		if len(parts) > 1 {
+			tierName := parts[1]
+			if a.streaming {
+				a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
+					"Cannot switch policy while streaming."))
+				return nil, true
+			}
+			profile, ok := a.policyProfiles[tierName]
+			if !ok {
+				available := make([]string, 0, len(a.policyProfiles))
+				for name := range a.policyProfiles {
+					available = append(available, name)
+				}
+				sort.Strings(available)
+				a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
+					fmt.Sprintf("Unknown policy tier: %s\nAvailable: %s", tierName, strings.Join(available, ", "))))
+				return nil, true
+			}
+			a.agentService.SetPolicyProfile(profile)
+			a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
+				fmt.Sprintf("Policy switched to **%s**: %s", profile.Name, profile.Description)))
+			return nil, true
+		}
+		// List tiers
+		var sb strings.Builder
+		sb.WriteString("**Policy Tiers:**\n\n")
+		active := a.agentService.ActivePolicyProfile().Name
+		for name, p := range a.policyProfiles {
+			marker := "  "
+			if name == active {
+				marker = "> "
+			}
+			sb.WriteString(fmt.Sprintf("%s**%s** — %s\n", marker, name, p.Description))
+		}
+		sb.WriteString("\nUse `/policy <tier>` to switch.")
+		a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem, sb.String()))
+		return nil, true
+
+	case "/agent":
+		if len(parts) > 1 {
+			typeName := parts[1]
+			if a.streaming {
+				a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
+					"Cannot switch agent while streaming."))
+				return nil, true
+			}
+			at, ok := a.agentTypes[typeName]
+			if !ok {
+				available := make([]string, 0, len(a.agentTypes))
+				for name := range a.agentTypes {
+					available = append(available, name)
+				}
+				sort.Strings(available)
+				a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
+					fmt.Sprintf("Unknown agent type: %s\nAvailable: %s", typeName, strings.Join(available, ", "))))
+				return nil, true
+			}
+			profile, ok := a.policyProfiles[at.PolicyTier]
+			if !ok {
+				a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
+					fmt.Sprintf("Agent type %q references unknown policy tier %q", typeName, at.PolicyTier)))
+				return nil, true
+			}
+			filteredReg := infrastructure.BuildRegistryForAgentType(at, a.fullRegistry)
+			a.agentService.ApplyAgentType(at, profile, filteredReg)
+			a.sidebar.SetModelInfo(at.Model, a.agentService.ProviderName(), 0)
+			a.input.SetModelInfo(at.Model, a.agentService.ProviderName())
+			a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
+				fmt.Sprintf("Agent switched to **%s** (%s) — policy: %s", at.Name, at.Description, at.PolicyTier)))
+			return nil, true
+		}
+		// List agent types
+		var sb strings.Builder
+		sb.WriteString("**Agent Types:**\n\n")
+		activeType := a.agentService.ActiveAgentType()
+		for name, at := range a.agentTypes {
+			marker := "  "
+			if activeType != nil && name == activeType.Name {
+				marker = "> "
+			}
+			sb.WriteString(fmt.Sprintf("%s**%s** — %s (model: %s, policy: %s)\n", marker, name, at.Description, at.Model, at.PolicyTier))
+		}
+		sb.WriteString("\nUse `/agent <type>` to switch.")
+		a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem, sb.String()))
 		return nil, true
 
 	case "/clear":
