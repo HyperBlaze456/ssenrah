@@ -43,3 +43,48 @@ agent_types:
     tools: ["read_file"]
     system_prompt: "You are ssenrah in read-only mode. You can read files to analyze code but cannot modify anything.\nRespond in markdown format."
     max_turns: 5
+  explorer:
+    description: "Fast read-only agent for codebase exploration"
+    model: "dummy-v1"
+    policy_tier: "balanced"
+    tools: ["read_file"]
+    system_prompt: "You are ssenrah in explorer mode. Your job is to explore and map code structure, understand relationships between files, and report findings clearly.\nRespond in markdown format."
+    max_turns: 5
+  coder:
+    description: "Full-featured agent for implementation tasks"
+    model: "dummy-v1"
+    policy_tier: "autonomous"
+    tools: ["read_file", "write_file", "bash"]
+    system_prompt: "You are ssenrah in coder mode. Your job is to write clean, correct, and well-structured code.\nFollow existing code style. Prefer minimal diffs. Respond in markdown format."
+    max_turns: 15
+  verifier:
+    description: "Read-only agent for correctness verification"
+    model: "dummy-v1"
+    policy_tier: "balanced"
+    tools: ["read_file", "bash"]
+    system_prompt: "You are ssenrah in verifier mode. Your job is to check that implementations are correct, tests pass, and behavior matches expectations.\nRespond in markdown format."
+    max_turns: 5
+  reviewer:
+    description: "Read-only agent for code review and feedback"
+    model: "dummy-v1"
+    policy_tier: "balanced"
+    tools: ["read_file"]
+    system_prompt: "You are ssenrah in reviewer mode. Your job is to review code for quality, correctness, and clarity, and provide actionable feedback.\nRespond in markdown format."
+    max_turns: 8
+
+team:
+  max_workers: 4
+  task_timeout_seconds: 120
+  heartbeat_interval_seconds: 5
+  idle_threshold_seconds: 30
+  max_nudges: 3
+
+  category_map:
+    explore: "explorer"
+    implement: "coder"
+    refactor: "coder"
+    test: "verifier"
+    verify: "verifier"
+    debug: "reviewer"
+    document: "reviewer"
+    generic: "default"

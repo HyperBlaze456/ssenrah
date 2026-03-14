@@ -17,6 +17,7 @@ type HarnessConfig struct {
 	App         AppConfig                   `yaml:"app"`
 	PolicyTiers map[string]PolicyTierConfig `yaml:"policy_tiers"`
 	AgentTypes  map[string]AgentTypeConfig  `yaml:"agent_types"`
+	Team        TeamConfig                  `yaml:"team"`
 }
 
 // PolicyTierConfig defines a single policy tier.
@@ -40,6 +41,16 @@ type AgentTypeConfig struct {
 	Tools        []string `yaml:"tools"`
 	SystemPrompt string   `yaml:"system_prompt"`
 	MaxTurns     int      `yaml:"max_turns"`
+}
+
+// TeamConfig defines team orchestration settings.
+type TeamConfig struct {
+	MaxWorkers               int               `yaml:"max_workers"`
+	TaskTimeoutSeconds       int               `yaml:"task_timeout_seconds"`
+	HeartbeatIntervalSeconds int               `yaml:"heartbeat_interval_seconds"`
+	IdleThresholdSeconds     int               `yaml:"idle_threshold_seconds"`
+	MaxNudges                int               `yaml:"max_nudges"`
+	CategoryMap              map[string]string `yaml:"category_map"`
 }
 
 // DefaultHarnessConfig parses the embedded defaults.yaml.
@@ -90,6 +101,28 @@ func (c HarnessConfig) Validate() error {
 	for name, at := range c.AgentTypes {
 		if _, ok := c.PolicyTiers[at.PolicyTier]; !ok {
 			return fmt.Errorf("agent type %q: references nonexistent policy tier %q", name, at.PolicyTier)
+		}
+	}
+
+	// Validate team config only when the section is present (MaxWorkers > 0 signals active team mode).
+	t := c.Team
+	if t.MaxWorkers != 0 {
+		if t.MaxWorkers < 1 {
+			return fmt.Errorf("team: max_workers must be > 0, got %d", t.MaxWorkers)
+		}
+		if t.TaskTimeoutSeconds < 1 {
+			return fmt.Errorf("team: task_timeout_seconds must be > 0, got %d", t.TaskTimeoutSeconds)
+		}
+		if t.HeartbeatIntervalSeconds < 1 {
+			return fmt.Errorf("team: heartbeat_interval_seconds must be > 0, got %d", t.HeartbeatIntervalSeconds)
+		}
+		if t.HeartbeatIntervalSeconds >= t.IdleThresholdSeconds {
+			return fmt.Errorf("team: heartbeat_interval_seconds (%d) must be less than idle_threshold_seconds (%d)", t.HeartbeatIntervalSeconds, t.IdleThresholdSeconds)
+		}
+		for cat, agentType := range t.CategoryMap {
+			if _, ok := c.AgentTypes[agentType]; !ok {
+				return fmt.Errorf("team: category_map[%q] references nonexistent agent type %q", cat, agentType)
+			}
 		}
 	}
 

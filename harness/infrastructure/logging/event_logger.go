@@ -66,6 +66,60 @@ func (l *MemoryEventLogger) EventsByType(t event.EventType) []event.Event {
 	return result
 }
 
+// NewTeamStartedEvent creates an Event for the start of a team execution.
+func NewTeamStartedEvent(goalDescription string, taskCount int) event.Event {
+	return event.Event{
+		ID:        uuid.New().String(),
+		Type:      event.EventTeamStarted,
+		Timestamp: time.Now(),
+		Data: map[string]any{
+			"goal_description": goalDescription,
+			"task_count":       taskCount,
+		},
+	}
+}
+
+// NewTeamCompletedEvent creates an Event for the completion of a team execution.
+func NewTeamCompletedEvent(totalTasks, completed, failed int) event.Event {
+	return event.Event{
+		ID:        uuid.New().String(),
+		Type:      event.EventTeamCompleted,
+		Timestamp: time.Now(),
+		Data: map[string]any{
+			"total_tasks": totalTasks,
+			"completed":   completed,
+			"failed":      failed,
+		},
+	}
+}
+
+// NewTaskEvent creates an Event for a task lifecycle transition.
+func NewTaskEvent(eventType event.EventType, taskID, description, agentType string) event.Event {
+	return event.Event{
+		ID:        uuid.New().String(),
+		Type:      eventType,
+		Timestamp: time.Now(),
+		Data: map[string]any{
+			"task_id":     taskID,
+			"description": description,
+			"agent_type":  agentType,
+		},
+	}
+}
+
+// NewWorkerEvent creates an Event for a worker lifecycle transition.
+func NewWorkerEvent(eventType event.EventType, workerID, taskID string) event.Event {
+	return event.Event{
+		ID:        uuid.New().String(),
+		Type:      eventType,
+		Timestamp: time.Now(),
+		Data: map[string]any{
+			"worker_id": workerID,
+			"task_id":   taskID,
+		},
+	}
+}
+
 // NewPolicyEvent creates an Event for a policy evaluation.
 func NewPolicyEvent(toolName string, decision policy.PolicyDecision, tierName string, reason string) event.Event {
 	return event.Event{
