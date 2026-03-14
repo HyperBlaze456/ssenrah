@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/HyperBlaze456/ssenrah/harness/application"
@@ -112,8 +113,33 @@ func main() {
 	sessSvc.RegisterKeyBinding(session.KeyBinding{Key: "ctrl+c", Action: "quit", Description: "Quit"})
 	sessSvc.RegisterKeyBinding(session.KeyBinding{Key: "y/n/a", Action: "approve", Description: "Approve/Deny/Always"})
 
+	// Build team orchestrator (available for team mode)
+	var orchestrator *application.OrchestratorService
+	if harnessCfg.Team.MaxWorkers > 0 {
+		taskTimeout := time.Duration(harnessCfg.Team.TaskTimeoutSeconds) * time.Second
+
+		workerPool := application.NewWorkerPool(
+			harnessCfg.Team.MaxWorkers,
+			prov,
+			fullRegistry,
+			policyEngine,
+			policyProfiles,
+			agentTypes,
+			eventLogger,
+			taskTimeout,
+		)
+
+		matcher := application.NewAgentMatcher(
+			harnessCfg.Team.CategoryMap,
+			agentTypes,
+			"default",
+		)
+
+		orchestrator = application.NewOrchestratorService(workerPool, matcher, eventLogger)
+	}
+
 	// Create TUI with policy profiles, agent types, and full registry for runtime switching
-	app := tui.NewApp(agentSvc, sessSvc, policyProfiles, agentTypes, fullRegistry)
+	app := tui.NewApp(agentSvc, sessSvc, policyProfiles, agentTypes, fullRegistry, orchestrator)
 
 	// Create program and wire reference for async Send()
 	p := tea.NewProgram(app, tea.WithAltScreen())

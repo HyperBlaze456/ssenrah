@@ -51,6 +51,9 @@ type App struct {
 	policyProfiles map[string]policy.PolicyProfile
 	agentTypes     map[string]agent.AgentType
 	fullRegistry   *tool.Registry
+
+	// Team orchestrator (nil when team mode is not configured)
+	orchestrator *application.OrchestratorService
 }
 
 // NewApp creates the root App model.
@@ -60,6 +63,7 @@ func NewApp(
 	profiles map[string]policy.PolicyProfile,
 	types map[string]agent.AgentType,
 	fullReg *tool.Registry,
+	orch *application.OrchestratorService,
 ) *App {
 	t := defaultTheme()
 	return &App{
@@ -68,6 +72,7 @@ func NewApp(
 		policyProfiles: profiles,
 		agentTypes:     types,
 		fullRegistry:   fullReg,
+		orchestrator:   orch,
 		keys:           defaultKeyMap(),
 		theme:          t,
 		sidebarOpen:    true,
