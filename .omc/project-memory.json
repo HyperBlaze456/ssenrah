@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1773382408978,
+  "lastScanned": 1773496312307,
   "projectRoot": "/mnt/c/Users/hht63/Desktop/GitHub/ssenrah",
   "techStack": {
     "languages": [],
@@ -39,7 +39,7 @@
       "path": "app",
       "purpose": "Application code",
       "fileCount": 9,
-      "lastAccessed": 1773382408893,
+      "lastAccessed": 1773496312246,
       "keyFiles": [
         "components.json",
         "index.html",
@@ -52,14 +52,14 @@
       "path": "docs",
       "purpose": "Documentation",
       "fileCount": 0,
-      "lastAccessed": 1773382408902,
+      "lastAccessed": 1773496312253,
       "keyFiles": []
     },
     "harness": {
       "path": "harness",
       "purpose": null,
       "fileCount": 4,
-      "lastAccessed": 1773382408911,
+      "lastAccessed": 1773496312260,
       "keyFiles": [
         "go.mod",
         "go.sum",
@@ -71,7 +71,7 @@
       "path": "app/dist",
       "purpose": "Distribution/build output",
       "fileCount": 1,
-      "lastAccessed": 1773382408927,
+      "lastAccessed": 1773496312268,
       "keyFiles": [
         "index.html"
       ]
@@ -80,14 +80,14 @@
       "path": "app/node_modules",
       "purpose": "Dependencies",
       "fileCount": 1,
-      "lastAccessed": 1773382408940,
+      "lastAccessed": 1773496312279,
       "keyFiles": []
     },
     "app/public": {
       "path": "app/public",
       "purpose": "Public files",
       "fileCount": 1,
-      "lastAccessed": 1773382408950,
+      "lastAccessed": 1773496312286,
       "keyFiles": [
         "logo.png"
       ]
@@ -96,7 +96,7 @@
       "path": "app/src",
       "purpose": "Source code",
       "fileCount": 5,
-      "lastAccessed": 1773382408961,
+      "lastAccessed": 1773496312295,
       "keyFiles": [
         "App.css",
         "App.tsx",
@@ -107,7 +107,7 @@
       "path": "harness/docs",
       "purpose": "Documentation",
       "fileCount": 1,
-      "lastAccessed": 1773382408978,
+      "lastAccessed": 1773496312307,
       "keyFiles": [
         "v03-agent-loop.md"
       ]
@@ -115,195 +115,255 @@
   },
   "hotPaths": [
     {
-      "path": "",
-      "accessCount": 13,
-      "lastAccessed": 1773383927754,
-      "type": "directory"
-    },
-    {
-      "path": "harness/domain/policy/models.go",
-      "accessCount": 8,
-      "lastAccessed": 1773384621316,
+      "path": "harness/application/worker_pool_test.go",
+      "accessCount": 9,
+      "lastAccessed": 1773498255019,
       "type": "file"
     },
     {
-      "path": "harness/domain/agent/models.go",
-      "accessCount": 8,
-      "lastAccessed": 1773384642009,
+      "path": "harness/infrastructure/config/yaml_config.go",
+      "accessCount": 9,
+      "lastAccessed": 1773498770171,
       "type": "file"
     },
     {
-      "path": "harness/tui/app.go",
+      "path": "harness/application/orchestrator.go",
       "accessCount": 7,
-      "lastAccessed": 1773383951621,
-      "type": "file"
-    },
-    {
-      "path": "harness/application/agent.go",
-      "accessCount": 6,
-      "lastAccessed": 1773383949868,
-      "type": "file"
-    },
-    {
-      "path": "harness/application/agent_test.go",
-      "accessCount": 6,
-      "lastAccessed": 1773383950214,
-      "type": "file"
-    },
-    {
-      "path": "harness/domain/policy/port.go",
-      "accessCount": 6,
-      "lastAccessed": 1773383951307,
+      "lastAccessed": 1773498770087,
       "type": "file"
     },
     {
       "path": "harness/main.go",
-      "accessCount": 6,
-      "lastAccessed": 1773383952481,
-      "type": "file"
-    },
-    {
-      "path": "harness/domain/tool/models.go",
-      "accessCount": 6,
-      "lastAccessed": 1773383961494,
+      "accessCount": 7,
+      "lastAccessed": 1773498807132,
       "type": "file"
     },
     {
       "path": "harness/domain/event/models.go",
       "accessCount": 6,
-      "lastAccessed": 1773383962397,
+      "lastAccessed": 1773498769083,
       "type": "file"
     },
     {
-      "path": "harness/domain/event/port.go",
-      "accessCount": 6,
-      "lastAccessed": 1773383963316,
-      "type": "file"
-    },
-    {
-      "path": "harness/infrastructure/config/config.go",
-      "accessCount": 6,
-      "lastAccessed": 1773383971532,
-      "type": "file"
-    },
-    {
-      "path": "harness/domain/tool/registry.go",
+      "path": "harness/domain/task/models.go",
       "accessCount": 5,
-      "lastAccessed": 1773383951808,
+      "lastAccessed": 1773498756814,
+      "type": "file"
+    },
+    {
+      "path": "harness/domain/agent/models.go",
+      "accessCount": 5,
+      "lastAccessed": 1773498756918,
+      "type": "file"
+    },
+    {
+      "path": "harness/infrastructure/config/defaults.yaml",
+      "accessCount": 5,
+      "lastAccessed": 1773498769882,
+      "type": "file"
+    },
+    {
+      "path": "harness/infrastructure/logging/event_logger.go",
+      "accessCount": 4,
+      "lastAccessed": 1773498248337,
+      "type": "file"
+    },
+    {
+      "path": "harness/application/orchestrator_test.go",
+      "accessCount": 4,
+      "lastAccessed": 1773498619779,
+      "type": "file"
+    },
+    {
+      "path": "harness/domain/task/graph.go",
+      "accessCount": 4,
+      "lastAccessed": 1773498764540,
+      "type": "file"
+    },
+    {
+      "path": "harness/application/agent.go",
+      "accessCount": 4,
+      "lastAccessed": 1773498769037,
+      "type": "file"
+    },
+    {
+      "path": "harness/infrastructure/config/yaml_config_test.go",
+      "accessCount": 3,
+      "lastAccessed": 1773496815851,
+      "type": "file"
+    },
+    {
+      "path": "harness/application/matcher_test.go",
+      "accessCount": 3,
+      "lastAccessed": 1773497201584,
+      "type": "file"
+    },
+    {
+      "path": "harness/tui/app.go",
+      "accessCount": 3,
+      "lastAccessed": 1773498763884,
+      "type": "file"
+    },
+    {
+      "path": "harness/domain/task/category.go",
+      "accessCount": 3,
+      "lastAccessed": 1773498764026,
+      "type": "file"
+    },
+    {
+      "path": "harness/domain/policy/models.go",
+      "accessCount": 3,
+      "lastAccessed": 1773498764769,
+      "type": "file"
+    },
+    {
+      "path": "harness/application/matcher.go",
+      "accessCount": 3,
+      "lastAccessed": 1773498769725,
       "type": "file"
     },
     {
       "path": "harness/infrastructure/factory.go",
-      "accessCount": 5,
-      "lastAccessed": 1773383962024,
-      "type": "file"
-    },
-    {
-      "path": "harness/domain/agent/port.go",
-      "accessCount": 4,
-      "lastAccessed": 1773383303274,
-      "type": "file"
-    },
-    {
-      "path": "harness/infrastructure/config/defaults.go",
-      "accessCount": 4,
-      "lastAccessed": 1773383313998,
-      "type": "file"
-    },
-    {
-      "path": "harness",
-      "accessCount": 4,
-      "lastAccessed": 1773383328587,
-      "type": "directory"
-    },
-    {
-      "path": "harness/domain/tool/port.go",
-      "accessCount": 4,
-      "lastAccessed": 1773383337398,
-      "type": "file"
-    },
-    {
-      "path": "harness/go.mod",
       "accessCount": 3,
-      "lastAccessed": 1773383319706,
+      "lastAccessed": 1773498769963,
+      "type": "file"
+    },
+    {
+      "path": "harness/application/worker_pool.go",
+      "accessCount": 3,
+      "lastAccessed": 1773498770033,
       "type": "file"
     },
     {
       "path": "harness/domain/shared/message.go",
-      "accessCount": 3,
-      "lastAccessed": 1773383336992,
-      "type": "file"
-    },
-    {
-      "path": "harness/tui/sidebar.go",
-      "accessCount": 3,
-      "lastAccessed": 1773383953583,
-      "type": "file"
-    },
-    {
-      "path": "harness/tui/approval.go",
-      "accessCount": 3,
-      "lastAccessed": 1773383971456,
-      "type": "file"
-    },
-    {
-      "path": "harness/tui/messages.go",
       "accessCount": 2,
-      "lastAccessed": 1773383075326,
+      "lastAccessed": 1773496456380,
       "type": "file"
     },
     {
-      "path": "harness/application/chat.go",
+      "path": "harness/infrastructure/logging/event_logger_test.go",
       "accessCount": 2,
-      "lastAccessed": 1773383091263,
+      "lastAccessed": 1773496545957,
+      "type": "file"
+    },
+    {
+      "path": "harness/application/agent_test.go",
+      "accessCount": 2,
+      "lastAccessed": 1773497085092,
+      "type": "file"
+    },
+    {
+      "path": "harness/domain/event/port.go",
+      "accessCount": 2,
+      "lastAccessed": 1773497100689,
+      "type": "file"
+    },
+    {
+      "path": "harness/domain/tool/registry.go",
+      "accessCount": 2,
+      "lastAccessed": 1773497101849,
+      "type": "file"
+    },
+    {
+      "path": "harness",
+      "accessCount": 2,
+      "lastAccessed": 1773498270404,
+      "type": "directory"
+    },
+    {
+      "path": "",
+      "accessCount": 2,
+      "lastAccessed": 1773498804642,
+      "type": "directory"
+    },
+    {
+      "path": "harness/domain/agent/port.go",
+      "accessCount": 1,
+      "lastAccessed": 1773496368650,
+      "type": "file"
+    },
+    {
+      "path": "harness/domain/tool/port.go",
+      "accessCount": 1,
+      "lastAccessed": 1773496391116,
+      "type": "file"
+    },
+    {
+      "path": "harness/go.mod",
+      "accessCount": 1,
+      "lastAccessed": 1773496462377,
+      "type": "file"
+    },
+    {
+      "path": "harness/domain/shared/message_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1773496474013,
+      "type": "file"
+    },
+    {
+      "path": "harness/domain/policy/engine_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1773496474145,
+      "type": "file"
+    },
+    {
+      "path": "harness/domain/task/graph_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1773496860951,
       "type": "file"
     },
     {
       "path": "harness/infrastructure/dummy/provider.go",
       "accessCount": 1,
-      "lastAccessed": 1773382742874,
+      "lastAccessed": 1773497072109,
       "type": "file"
     },
     {
-      "path": "harness/infrastructure/prompt/loader.go",
+      "path": "harness/domain/event",
       "accessCount": 1,
-      "lastAccessed": 1773382743571,
-      "type": "file"
-    },
-    {
-      "path": "harness/application/session.go",
-      "accessCount": 1,
-      "lastAccessed": 1773382752587,
-      "type": "file"
-    },
-    {
-      "path": "harness/domain/session/session.go",
-      "accessCount": 1,
-      "lastAccessed": 1773382752762,
-      "type": "file"
+      "lastAccessed": 1773497094529,
+      "type": "directory"
     },
     {
       "path": "harness/domain/conversation/conversation.go",
       "accessCount": 1,
-      "lastAccessed": 1773383083568,
+      "lastAccessed": 1773497094613,
       "type": "file"
     },
     {
-      "path": "harness/domain/shared/errors.go",
+      "path": "harness/application/policy_integration_test.go",
       "accessCount": 1,
-      "lastAccessed": 1773383084913,
+      "lastAccessed": 1773497101473,
       "type": "file"
     },
     {
-      "path": "harness/tui/statusbar.go",
+      "path": "harness/domain/task",
       "accessCount": 1,
-      "lastAccessed": 1773383320630,
-      "type": "file"
+      "lastAccessed": 1773498256509,
+      "type": "directory"
     },
     {
-      "path": "harness/tui/input.go",
+      "path": "harness/infrastructure",
       "accessCount": 1,
-      "lastAccessed": 1773383321038,
+      "lastAccessed": 1773498262985,
+      "type": "directory"
+    },
+    {
+      "path": "harness/application",
+      "accessCount": 1,
+      "lastAccessed": 1773498263743,
+      "type": "directory"
+    },
+    {
+      "path": "harness/infrastructure/dummy",
+      "accessCount": 1,
+      "lastAccessed": 1773498270945,
+      "type": "directory"
+    },
+    {
+      "path": "harness/ARCHITECTURE.md",
+      "accessCount": 1,
+      "lastAccessed": 1773498902782,
       "type": "file"
     }
   ],
