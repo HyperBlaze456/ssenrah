@@ -28,6 +28,7 @@ type OrchestratorService struct {
 	matcher     *AgentMatcher
 	eventLogger event.EventLogger
 	graph       *task.TaskGraph
+	decomposer  *Decomposer
 
 	mu      sync.Mutex
 	cancel  context.CancelFunc
@@ -40,12 +41,14 @@ func NewOrchestratorService(
 	pool *WorkerPool,
 	matcher *AgentMatcher,
 	logger event.EventLogger,
+	decomposer *Decomposer,
 ) *OrchestratorService {
 	return &OrchestratorService{
 		pool:        pool,
 		matcher:     matcher,
 		eventLogger: logger,
 		graph:       task.NewTaskGraph(),
+		decomposer:  decomposer,
 	}
 }
 
@@ -95,6 +98,23 @@ func (o *OrchestratorService) AddTasks(specs []TaskSpec) error {
 	}
 
 	return nil
+}
+
+// Decompose uses the LLM to break a goal into tasks, adds them to the graph,
+// and returns the count of tasks created. This is the entry point for
+// autonomous task decomposition — no human intervention needed.
+func (o *OrchestratorService) Decompose(ctx context.Context, goal string) (int, error) {
+	if o.decomposer == nil {
+		return 0, fmt.Errorf("no decomposer configured")
+	}
+	specs, err := o.decomposer.Decompose(ctx, goal)
+	if err != nil {
+		return 0, fmt.Errorf("decompose goal: %w", err)
+	}
+	if err := o.AddTasks(specs); err != nil {
+		return 0, fmt.Errorf("add decomposed tasks: %w", err)
+	}
+	return len(specs), nil
 }
 
 // Run executes the task graph to completion. It logs team lifecycle events and

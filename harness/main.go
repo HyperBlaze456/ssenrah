@@ -135,7 +135,8 @@ func main() {
 			"default",
 		)
 
-		orchestrator = application.NewOrchestratorService(workerPool, matcher, eventLogger)
+		decomposer := application.NewDecomposer(prov, modelName)
+		orchestrator = application.NewOrchestratorService(workerPool, matcher, eventLogger, decomposer)
 	}
 
 	// Create TUI with policy profiles, agent types, and full registry for runtime switching

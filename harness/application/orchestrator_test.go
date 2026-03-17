@@ -59,7 +59,7 @@ func setupTestOrchestrator(t *testing.T) (*OrchestratorService, *logging.MemoryE
 	)
 
 	matcher := NewAgentMatcher(cfg.Team.CategoryMap, agentTypes, "default")
-	orch := NewOrchestratorService(pool, matcher, logger)
+	orch := NewOrchestratorService(pool, matcher, logger, nil)
 
 	return orch, logger
 }
