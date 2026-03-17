@@ -135,11 +135,19 @@ Maps a `Task` to an agent type name. Priority chain:
 `InferCategory` scores all 8 categories; confidence = `best / (best + second)` when two categories score, else 0.8 for a single match.
 
 ### OrchestratorService (`application/orchestrator.go`)
-Drives the task DAG to completion. Maintains a single `TaskGraph`, an `AgentMatcher`, and a `WorkerPool`.
+Drives the task DAG to completion. Maintains a single `TaskGraph`, an `AgentMatcher`, a `WorkerPool`, and a `Decomposer`.
 
+- `Decompose(ctx, goal)` — calls the LLM to break a goal into tasks, adds them to the graph. Zero human intervention.
 - `AddTask` / `AddTasks` — builds tasks, runs matcher, inserts into graph, validates DAG.
 - `Run(ctx)` / `RunWithCallback(ctx, onBatch)` — scheduling loop (see §7).
 - Owns all `graph.Complete()` / `graph.Fail()` calls — workers do not mark completion directly.
+
+### Decomposer (`application/decomposer.go`)
+Uses a single `provider.Chat()` call (non-streaming) to decompose a natural-language goal into structured `TaskSpec` entries.
+
+- System prompt instructs the LLM to output a JSON array of `{id, description, category, blocked_by, priority}`.
+- Handles common LLM failure modes: strips markdown code fences, falls back invalid categories to `"generic"`, silently drops dependencies referencing non-existent task IDs.
+- Returns `[]TaskSpec` ready for `OrchestratorService.AddTasks()`.
 
 ---
 
@@ -363,3 +371,48 @@ type Tool interface {
 `ParameterSchema` describes JSON Schema properties (type, description, required list). The application layer converts this to the provider's wire format via `toolSchemaToMap()`.
 
 Each `AgentType` carries an allowlist of tool names. `infrastructure.BuildRegistryForAgentType()` constructs a filtered `Registry` containing only those tools, enforcing capability isolation per agent type.
+
+---
+
+## 11. TUI Team Integration
+
+The TUI exposes team execution through a sidebar panel and slash commands.
+
+### Sidebar Team Panel
+
+When idle: shows `(idle)`. When running: shows a flat list of tasks with status icons, agent type, and status text. Capped at 10 entries with overflow indicator.
+
+```
+ Team  [2/5 done]
+  ● task-1  coder     running
+  ✓ task-2  explorer  completed
+  ✗ task-3  coder     failed
+  ○ task-4  reviewer  pending
+```
+
+Icons: `●` running (yellow), `✓` completed (green), `✗` failed (red), `○` pending (gray), `⊘` cancelled (gray).
+
+No DAG/tree rendering — single-depth flat list only.
+
+### Slash Commands
+
+| Command | Action |
+|---------|--------|
+| `/team <goal>` | Decompose goal via LLM, start team execution |
+| `/team status` | Show current graph stats |
+| `/team cancel` | Cancel running execution |
+
+Progress updates flow through `RunWithCallback` → `program.Send(teamProgressMsg)` → sidebar refresh.
+
+---
+
+## 12. LLM Task Decomposition
+
+The `Decomposer` enables fully autonomous task planning. When a user runs `/team <goal>`:
+
+1. `OrchestratorService.Decompose(ctx, goal)` is called.
+2. `Decomposer` sends a single `provider.Chat()` request with a structured system prompt.
+3. The LLM returns a JSON array of tasks with IDs, descriptions, categories, dependencies, and priorities.
+4. Response is parsed with defensive handling: code fence stripping, category validation (fallback to `"generic"`), dependency validation (drop unknown refs).
+5. Parsed specs are fed to `OrchestratorService.AddTasks()` which runs the matcher and builds the DAG.
+6. `OrchestratorService.Run()` executes the DAG — no further human input needed.
