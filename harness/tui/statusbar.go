@@ -33,7 +33,7 @@ func (s *StatusBar) View() string {
 	case "streaming":
 		hints = "Esc: cancel | Tab: sidebar | Ctrl+C: quit"
 	case "awaiting approval":
-		hints = "Y: approve | N: deny | A: always | Tab: sidebar"
+		hints = "Enter: approve | N: deny | A: always | Tab: sidebar"
 	default:
 		hints = "Enter: send | Tab: sidebar | Ctrl+C: quit"
 	}

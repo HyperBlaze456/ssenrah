@@ -108,10 +108,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyMsg:
-		// Approval keys take priority when modal is visible
+		// Approval keys take priority when inline prompt is visible
 		if a.approval.IsVisible() {
 			switch msg.String() {
-			case "y", "Y":
+			case "y", "Y", "enter":
 				a.approval.Hide()
 				if a.approvalResponseCh != nil {
 					a.approvalResponseCh <- application.ApprovalResponse{Approved: true}
@@ -138,6 +138,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.sessionService.SetPhase(session.PhaseStreaming)
 				a.statusBar.SetPhase(session.PhaseStreaming)
 				return a, nil
+			case "tab":
+				// Allow sidebar toggle during approval
+				a.sidebarOpen = !a.sidebarOpen
+				a.updateLayout()
+				return a, nil
+			case "ctrl+c":
+				return a, tea.Quit
 			}
 			// Block all other keys while approval is showing
 			return a, nil
@@ -503,12 +510,10 @@ func (a *App) handleSlashCommand(input string) (tea.Cmd, bool) {
 			}
 			a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
 				fmt.Sprintf("Starting team for: %s", goal)))
+			orch := a.orchestrator
 			return func() tea.Msg {
-				// Decompose will be implemented by the LLM task decomposition feature.
-				// For now, return an error indicating manual task addition is required.
-				return teamDecomposeResultMsg{
-					Err: fmt.Errorf("Decompose not yet implemented: add tasks manually via orchestrator.AddTask before calling /team"),
-				}
+				count, err := orch.Decompose(context.Background(), goal)
+				return teamDecomposeResultMsg{TaskCount: count, Err: err}
 			}, true
 		}
 
@@ -608,15 +613,17 @@ func (a *App) View() string {
 		)
 	}
 
-	// Approval overlay takes priority
-	if a.approval.IsVisible() {
-		a.approval.SetSize(a.width, a.height)
-		return a.approval.View()
-	}
-
 	chatView := a.chat.View()
-	inputView := a.input.View()
 	statusView := a.statusBar.View()
+
+	// When approval is active, replace the input bar with the inline approval prompt
+	var inputView string
+	if a.approval.IsVisible() {
+		a.approval.SetSize(layout.ChatWidth, 0)
+		inputView = a.approval.View()
+	} else {
+		inputView = a.input.View()
+	}
 
 	// Build main column with constrained width
 	mainColStyle := lipgloss.NewStyle().Width(layout.ChatWidth)
