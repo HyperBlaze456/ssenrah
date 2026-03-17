@@ -44,6 +44,11 @@ type App struct {
 	totalTokens int
 	totalCost   float64
 
+	// messageQueue holds messages sent while the agent is busy.
+	// When the current run finishes, the next queued message is sent automatically.
+	// Sending while streaming cancels the current run and queues the message.
+	messageQueue []shared.Message
+
 	// Agent loop state
 	agentEventCh       <-chan application.AgentEvent
 	approvalResponseCh chan<- application.ApprovalResponse
@@ -177,32 +182,32 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 
 		case key.Matches(msg, a.keys.Send):
-			if a.streaming {
-				return a, nil // guard: don't double-send
-			}
 			content := a.input.Value()
 			if content == "" {
 				return a, nil
 			}
 			a.input.Reset()
 
-			// Handle slash commands
+			// Handle slash commands (always immediate, even while streaming)
 			if cmd, ok := a.handleSlashCommand(content); ok {
 				return a, cmd
 			}
 
-			a.streaming = true
-			a.sessionService.SetPhase(session.PhaseStreaming)
-			a.statusBar.SetPhase(session.PhaseStreaming)
-
-			// Build user message once — same object goes to both TUI and Conversation
 			userMsg := shared.NewMessage(shared.RoleUser, content)
 			a.chat.AddUserMessage(userMsg)
 
-			ctx, cancel := context.WithCancel(context.Background())
-			a.cancelFn = cancel
+			if a.streaming {
+				// Interrupt: cancel current run, queue the message.
+				// The queued message will be sent when EventDone/EventError fires.
+				if a.cancelFn != nil {
+					a.cancelFn()
+				}
+				a.messageQueue = append(a.messageQueue, userMsg)
+				return a, nil
+			}
 
-			return a, a.startAgentCmd(ctx, userMsg)
+			// Not streaming — send immediately
+			return a, a.sendMessage(userMsg)
 
 		case key.Matches(msg, a.keys.ClearChat):
 			a.chat.Clear()
@@ -277,6 +282,29 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, tea.Batch(cmds...)
 }
 
+// sendMessage starts a new agent run for the given message.
+func (a *App) sendMessage(userMsg shared.Message) tea.Cmd {
+	a.streaming = true
+	a.sessionService.SetPhase(session.PhaseStreaming)
+	a.statusBar.SetPhase(session.PhaseStreaming)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	a.cancelFn = cancel
+
+	return a.startAgentCmd(ctx, userMsg)
+}
+
+// drainQueue pops the next queued message and sends it.
+// Returns nil if the queue is empty.
+func (a *App) drainQueue() tea.Cmd {
+	if len(a.messageQueue) == 0 {
+		return nil
+	}
+	next := a.messageQueue[0]
+	a.messageQueue = a.messageQueue[1:]
+	return a.sendMessage(next)
+}
+
 // startAgentCmd launches the agent loop and starts listening for events.
 func (a *App) startAgentCmd(ctx context.Context, userMsg shared.Message) tea.Cmd {
 	eventCh := make(chan application.AgentEvent, 16)
@@ -337,18 +365,29 @@ func (a *App) handleAgentEvent(event application.AgentEvent) (tea.Model, tea.Cmd
 	case application.EventDone:
 		a.streaming = false
 		a.cancelFn = nil
-		a.sessionService.SetPhase(session.PhaseIdle)
-		a.statusBar.SetPhase(session.PhaseIdle)
 		a.sidebar.AddActivity(ActivityEntry{
 			Time:    time.Now().Format("15:04"),
 			Message: fmt.Sprintf("done (%d turns, %d tok)", ev.TotalTurns, ev.TotalUsage.TotalTokens()),
 		})
+		// Drain queue: if messages are waiting, send the next one
+		if cmd := a.drainQueue(); cmd != nil {
+			return a, cmd
+		}
+		a.sessionService.SetPhase(session.PhaseIdle)
+		a.statusBar.SetPhase(session.PhaseIdle)
 		return a, nil // stop listening
 
 	case application.EventError:
-		a.chat.ShowError(ev.Err)
 		a.streaming = false
 		a.cancelFn = nil
+		// Don't show cancellation as error when we interrupted intentionally
+		if ev.Err != nil && ev.Err != shared.ErrStreamCancelled {
+			a.chat.ShowError(ev.Err)
+		}
+		// Drain queue: if messages are waiting, send the next one
+		if cmd := a.drainQueue(); cmd != nil {
+			return a, cmd
+		}
 		a.sessionService.SetPhase(session.PhaseIdle)
 		a.statusBar.SetPhase(session.PhaseIdle)
 		return a, nil // stop listening
