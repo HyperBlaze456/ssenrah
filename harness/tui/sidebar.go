@@ -5,12 +5,20 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/HyperBlaze456/ssenrah/harness/domain/task"
 )
 
 // ActivityEntry represents a single activity log entry.
 type ActivityEntry struct {
 	Time    string
 	Message string
+}
+
+// TeamTaskEntry holds display data for a single task in the team panel.
+type TeamTaskEntry struct {
+	ID        string
+	AgentType string
+	Status    task.TaskStatus
 }
 
 // Sidebar shows model info, tokens, cost, and activity log.
@@ -26,6 +34,11 @@ type Sidebar struct {
 	theme      theme
 	width      int
 	height     int
+
+	// Team section state.
+	teamTasks []TeamTaskEntry
+	teamStats task.GraphStats
+	teamIdle  bool
 }
 
 // NewSidebar creates a Sidebar component.
@@ -37,7 +50,22 @@ func NewSidebar(t theme, width, height int) Sidebar {
 		theme:     t,
 		width:     width,
 		height:    height,
+		teamIdle:  true,
 	}
+}
+
+// SetTeamStatus updates the team section with current task states.
+func (s *Sidebar) SetTeamStatus(tasks []TeamTaskEntry, stats task.GraphStats) {
+	s.teamTasks = tasks
+	s.teamStats = stats
+	s.teamIdle = false
+}
+
+// ClearTeam resets the team section to idle.
+func (s *Sidebar) ClearTeam() {
+	s.teamTasks = nil
+	s.teamStats = task.GraphStats{}
+	s.teamIdle = true
 }
 
 // SetSize updates dimensions.
@@ -100,6 +128,37 @@ func (s *Sidebar) View() string {
 		sb.WriteString("\n")
 	}
 
+	// Team section
+	if s.teamIdle {
+		sb.WriteString(s.theme.SidebarTitle.Render(" Team"))
+		sb.WriteString("\n")
+		sb.WriteString(s.theme.Muted.Render("  (idle)"))
+		sb.WriteString("\n\n")
+	} else {
+		header := fmt.Sprintf(" Team  [%d/%d done]", s.teamStats.Completed, s.teamStats.Total)
+		sb.WriteString(s.theme.SidebarTitle.Render(header))
+		sb.WriteString("\n")
+		display := s.teamTasks
+		overflow := 0
+		if len(display) > 10 {
+			overflow = len(display) - 10
+			display = display[:10]
+		}
+		for _, t := range display {
+			icon, color := teamStatusIcon(t.Status)
+			agentStr := truncate(t.AgentType, 10)
+			idStr := truncate(t.ID, 8)
+			line := fmt.Sprintf("  %s %-8s  %-10s  %s", icon, idStr, agentStr, string(t.Status))
+			sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(line))
+			sb.WriteString("\n")
+		}
+		if overflow > 0 {
+			sb.WriteString(s.theme.Muted.Render(fmt.Sprintf("  ... and %d more", overflow)))
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+
 	// Tokens section
 	sb.WriteString(s.theme.SidebarTitle.Render(" Tokens"))
 	sb.WriteString("\n")
@@ -139,6 +198,22 @@ func (s *Sidebar) View() string {
 		BorderLeft(true).
 		BorderForeground(lipgloss.Color("8")).
 		Render(content)
+}
+
+// teamStatusIcon returns the display icon and terminal color code for a task status.
+func teamStatusIcon(status task.TaskStatus) (icon, color string) {
+	switch status {
+	case task.StatusRunning:
+		return "●", "3" // yellow
+	case task.StatusCompleted:
+		return "✓", "2" // green
+	case task.StatusFailed:
+		return "✗", "1" // red
+	case task.StatusCancelled:
+		return "⊘", "8" // gray
+	default: // pending, ready, unknown
+		return "○", "8" // gray
+	}
 }
 
 func truncate(s string, maxLen int) string {

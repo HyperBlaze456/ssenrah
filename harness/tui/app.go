@@ -16,6 +16,7 @@ import (
 	"github.com/HyperBlaze456/ssenrah/harness/domain/provider"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/session"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/shared"
+	"github.com/HyperBlaze456/ssenrah/harness/domain/task"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/tool"
 	"github.com/HyperBlaze456/ssenrah/harness/infrastructure"
 )
@@ -227,6 +228,29 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
 			fmt.Sprintf("Model switched to %s", msg.Model.ID)))
 		return a, nil
+
+	case teamProgressMsg:
+		a.sidebar.SetTeamStatus(msg.Tasks, msg.Stats)
+		return a, nil
+
+	case teamDoneMsg:
+		a.sidebar.ClearTeam()
+		if msg.Err != nil {
+			a.chat.ShowError(msg.Err)
+		} else {
+			a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
+				fmt.Sprintf("Team completed: %d/%d tasks succeeded", msg.Stats.Completed, msg.Stats.Total)))
+		}
+		return a, nil
+
+	case teamDecomposeResultMsg:
+		if msg.Err != nil {
+			a.chat.ShowError(msg.Err)
+			return a, nil
+		}
+		a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
+			fmt.Sprintf("Decomposed into %d tasks. Starting execution...", msg.TaskCount)))
+		return a, a.startTeamCmd()
 	}
 
 	// Delegate to input for text editing
@@ -356,11 +380,6 @@ func (a *App) handleSlashCommand(input string) (tea.Cmd, bool) {
 			fmt.Sprintf("Current provider: %s", a.agentService.ProviderName())))
 		return nil, true
 
-	case "/help":
-		a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
-			"/model [name]   — list or switch models\n/provider        — show current provider\n/policy [tier]   — list or switch policy tiers\n/agent [type]    — list or switch agent types\n/clear           — clear chat\n/help            — show this help"))
-		return nil, true
-
 	case "/policy":
 		if len(parts) > 1 {
 			tierName := parts[1]
@@ -452,6 +471,52 @@ func (a *App) handleSlashCommand(input string) (tea.Cmd, bool) {
 		a.chat.Clear()
 		return nil, true
 
+	case "/team":
+		if a.orchestrator == nil {
+			a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
+				"Team mode not configured (set team.max_workers > 0 in harness.yaml)"))
+			return nil, true
+		}
+		if len(parts) < 2 {
+			a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
+				"Usage: /team <goal>  |  /team status  |  /team cancel"))
+			return nil, true
+		}
+		subCmd := strings.ToLower(parts[1])
+		switch subCmd {
+		case "status":
+			stats := a.orchestrator.Stats()
+			a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
+				fmt.Sprintf("Team status: %d total, %d running, %d completed, %d failed, %d pending",
+					stats.Total, stats.Running, stats.Completed, stats.Failed, stats.Pending)))
+			return nil, true
+		case "cancel":
+			a.orchestrator.Cancel()
+			a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem, "Team execution cancelled."))
+			return nil, true
+		default:
+			// /team <goal description> — everything after /team is the goal
+			goal := strings.TrimSpace(strings.TrimPrefix(input, parts[0]))
+			if a.orchestrator.IsRunning() {
+				a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem, "Team is already running"))
+				return nil, true
+			}
+			a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
+				fmt.Sprintf("Starting team for: %s", goal)))
+			return func() tea.Msg {
+				// Decompose will be implemented by the LLM task decomposition feature.
+				// For now, return an error indicating manual task addition is required.
+				return teamDecomposeResultMsg{
+					Err: fmt.Errorf("Decompose not yet implemented: add tasks manually via orchestrator.AddTask before calling /team"),
+				}
+			}, true
+		}
+
+	case "/help":
+		a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
+			"/model [name]    — list or switch models\n/provider        — show current provider\n/policy [tier]   — list or switch policy tiers\n/agent [type]    — list or switch agent types\n/team <goal>     — start team execution\n/team status     — show team progress\n/team cancel     — cancel team execution\n/clear           — clear chat\n/help            — show this help"))
+		return nil, true
+
 	default:
 		a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem,
 			fmt.Sprintf("Unknown command: %s. Type /help for available commands.", command)))
@@ -490,6 +555,46 @@ func (a *App) showModelList(models []provider.ModelInfo) {
 	}
 	sb.WriteString("\nUse `/model <name>` to switch.")
 	a.chat.AddUserMessage(shared.NewMessage(shared.RoleSystem, sb.String()))
+}
+
+// startTeamCmd launches team execution in background and returns progress listener.
+func (a *App) startTeamCmd() tea.Cmd {
+	orch := a.orchestrator
+	prog := a.program
+	app := a
+	return func() tea.Msg {
+		ctx := context.Background()
+		err := orch.RunWithCallback(ctx, func(stats task.GraphStats) {
+			if prog != nil {
+				prog.Send(teamProgressMsg{
+					Stats: stats,
+					Tasks: app.buildTeamEntries(),
+				})
+			}
+		})
+		finalStats := orch.Stats()
+		if prog != nil {
+			prog.Send(teamDoneMsg{Stats: finalStats, Err: err})
+		}
+		return nil
+	}
+}
+
+// buildTeamEntries converts all tasks in the orchestrator graph to TeamTaskEntry slice.
+func (a *App) buildTeamEntries() []TeamTaskEntry {
+	if a.orchestrator == nil {
+		return nil
+	}
+	all := a.orchestrator.Graph().All()
+	entries := make([]TeamTaskEntry, 0, len(all))
+	for _, t := range all {
+		entries = append(entries, TeamTaskEntry{
+			ID:        t.ID,
+			AgentType: t.AgentType,
+			Status:    t.Status,
+		})
+	}
+	return entries
 }
 
 // View composes the full TUI layout.

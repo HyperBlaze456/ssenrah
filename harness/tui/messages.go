@@ -4,6 +4,7 @@ import (
 	"github.com/HyperBlaze456/ssenrah/harness/application"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/provider"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/shared"
+	"github.com/HyperBlaze456/ssenrah/harness/domain/task"
 	"github.com/HyperBlaze456/ssenrah/harness/domain/tool"
 )
 
@@ -36,3 +37,21 @@ type agentEventMsg struct{ Event application.AgentEvent }
 
 // agentChannelClosedMsg signals the agent event channel was closed.
 type agentChannelClosedMsg struct{}
+
+// teamProgressMsg carries updated team stats for the sidebar.
+type teamProgressMsg struct {
+	Stats task.GraphStats
+	Tasks []TeamTaskEntry
+}
+
+// teamDoneMsg signals team execution completed.
+type teamDoneMsg struct {
+	Stats task.GraphStats
+	Err   error
+}
+
+// teamDecomposeResultMsg carries the result of LLM task decomposition.
+type teamDecomposeResultMsg struct {
+	TaskCount int
+	Err       error
+}
