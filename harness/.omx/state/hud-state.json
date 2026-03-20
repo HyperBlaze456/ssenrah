@@ -1,5 +1,0 @@
-{
-  "last_turn_at": "2026-03-10T12:40:10.548Z",
-  "turn_count": 2,
-  "last_agent_output": "The root cause is in the wide-layout composition, not in `sidebarOpen` itself.\n\n- [`tui/app.go`](/mn"
-}

@@ -1,8 +1,0 @@
-{"timestamp":"2026-03-05T23:33:43.594Z","type":"watcher_start","cwd":"/mnt/c/Users/hht63/Desktop/GitHub/ssenrah","notify_script":"/home/hyperblaze/.nvm/versions/node/v24.12.0/lib/node_modules/oh-my-codex/scripts/notify-hook.js","poll_ms":700,"once":false}
-{"timestamp":"2026-03-05T23:35:54.154Z","type":"watcher_start","cwd":"/mnt/c/Users/hht63/Desktop/GitHub/ssenrah","notify_script":"/home/hyperblaze/.nvm/versions/node/v24.12.0/lib/node_modules/oh-my-codex/scripts/notify-hook.js","poll_ms":700,"once":true}
-{"timestamp":"2026-03-05T23:35:54.198Z","type":"watcher_once_complete","seen_turns":0}
-{"timestamp":"2026-03-05T23:35:54.233Z","type":"watcher_stop","signal":"SIGTERM"}
-{"timestamp":"2026-03-05T23:35:56.526Z","type":"watcher_start","cwd":"/mnt/c/Users/hht63/Desktop/GitHub/ssenrah","notify_script":"/home/hyperblaze/.nvm/versions/node/v24.12.0/lib/node_modules/oh-my-codex/scripts/notify-hook.js","poll_ms":700,"once":false}
-{"timestamp":"2026-03-05T23:36:22.217Z","type":"watcher_start","cwd":"/mnt/c/Users/hht63/Desktop/GitHub/ssenrah","notify_script":"/home/hyperblaze/.nvm/versions/node/v24.12.0/lib/node_modules/oh-my-codex/scripts/notify-hook.js","poll_ms":700,"once":true}
-{"timestamp":"2026-03-05T23:36:22.250Z","type":"watcher_once_complete","seen_turns":0}
-{"timestamp":"2026-03-05T23:36:22.273Z","type":"watcher_stop","signal":"SIGTERM"}

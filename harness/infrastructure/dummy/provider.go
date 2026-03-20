@@ -2,6 +2,7 @@ package dummy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -27,7 +28,19 @@ func NewProvider() *Provider {
 func (p *Provider) Name() string { return "dummy" }
 
 // Chat sends a non-streaming request and returns the complete response.
+// When the system prompt indicates a decomposition request, returns a valid
+// JSON task array instead of the normal agent-loop responses.
 func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
+	// Detect decomposition requests by checking the system prompt.
+	if isDecompositionRequest(req) {
+		response := decomposeResponse(req)
+		return provider.ChatResponse{
+			TextContent: response,
+			StopReason:  "end_turn",
+			Usage:       shared.Usage{InputTokens: len(req.Messages) * 50, OutputTokens: len(response) / 4},
+		}, nil
+	}
+
 	response, toolCalls, stopReason := pickAgentResponse(req)
 	return provider.ChatResponse{
 		TextContent: response,
@@ -235,4 +248,40 @@ Here's a comparison table:
 
 The key advantage is the *modular architecture* — every component is behind a Go interface.
 `)
+}
+
+// isDecompositionRequest returns true when the Chat request is from the Decomposer.
+// Detection is based on the system prompt containing the decomposition engine marker.
+func isDecompositionRequest(req provider.ChatRequest) bool {
+	return strings.Contains(req.SystemPrompt, "task decomposition engine")
+}
+
+// decomposeResponse generates a valid JSON task array for the dummy provider.
+// It incorporates the user's goal (from the last user message) into task descriptions
+// to provide realistic demo behavior.
+func decomposeResponse(req provider.ChatRequest) string {
+	goal := "the requested task"
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == "user" && strings.TrimSpace(req.Messages[i].Content) != "" {
+			goal = strings.TrimSpace(req.Messages[i].Content)
+			break
+		}
+	}
+
+	// Truncate long goals for readable task descriptions.
+	if len(goal) > 80 {
+		goal = goal[:77] + "..."
+	}
+
+	// Use json.Marshal to safely escape quotes and special characters in the goal.
+	safeGoal, _ := json.Marshal(goal)
+	// safeGoal is a quoted JSON string like `"the goal"` — strip outer quotes
+	// so we can embed it inside our own JSON string values.
+	escapedGoal := string(safeGoal[1 : len(safeGoal)-1])
+
+	return fmt.Sprintf(`[
+  {"id": "explore-context", "description": "Explore the codebase to understand the context for: %s", "category": "explore", "blocked_by": [], "priority": 0},
+  {"id": "implement-changes", "description": "Implement the required changes: %s", "category": "implement", "blocked_by": ["explore-context"], "priority": 1},
+  {"id": "verify-results", "description": "Verify the implementation is correct and complete", "category": "verify", "blocked_by": ["implement-changes"], "priority": 2}
+]`, escapedGoal, escapedGoal)
 }

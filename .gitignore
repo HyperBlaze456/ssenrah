@@ -5,6 +5,14 @@ harness/package-lock.json
 *.js.map
 *.d.ts.map
 
+# OMX/OMC generated runtime artifacts
+.omx/
+.omc/state/
+.omc/sessions/
+.omc/.project-memory.json.tmp*
+harness/.omx/
+harness/.omc/state/
+
 .env
 .env.*
 

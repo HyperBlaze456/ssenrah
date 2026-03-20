@@ -1,0 +1,47 @@
+{
+  "title": "Fix dummy environment agent team features — automatic decomposition",
+  "stories": [
+    {
+      "id": "US-001",
+      "title": "Dummy provider Chat() returns valid decomposition JSON",
+      "description": "When the Decomposer calls provider.Chat() with the decomposition system prompt, the dummy provider must return a valid JSON task array instead of markdown demo text.",
+      "acceptanceCriteria": [
+        "dummy.Provider.Chat() detects decomposition requests (system prompt contains 'task decomposition engine')",
+        "Returns a valid JSON array of tasks with id, description, category, blocked_by, priority fields",
+        "The returned tasks include realistic dependencies (exploration → implementation → verification)",
+        "Existing non-decomposition Chat() behavior (agent loop) is unchanged",
+        "go build succeeds with no errors"
+      ],
+      "priority": 0,
+      "passes": true
+    },
+    {
+      "id": "US-002",
+      "title": "End-to-end decompose→run integration test with dummy provider",
+      "description": "Add a test that calls OrchestratorService.Decompose() backed by the dummy provider and verifies tasks are created, then runs the DAG to completion.",
+      "acceptanceCriteria": [
+        "Test function TestOrchestratorService_Decompose_WithDummy exists in orchestrator_test.go",
+        "Test calls Decompose(ctx, goal) and verifies it returns >0 tasks without error",
+        "Test verifies the decomposed tasks are in the graph with assigned agent types",
+        "Test runs the full DAG via Run() and verifies all tasks reach terminal status",
+        "go test ./application/ -run TestOrchestratorService_Decompose passes"
+      ],
+      "priority": 1,
+      "passes": true
+    },
+    {
+      "id": "US-003",
+      "title": "Dummy provider Chat() response includes goal-aware task descriptions",
+      "description": "The dummy decomposition response should incorporate the user's goal text into task descriptions for realistic demo behavior.",
+      "acceptanceCriteria": [
+        "Decomposition response references the user's goal in at least one task description",
+        "Task IDs are valid kebab-case identifiers",
+        "Categories are valid TaskCategory values (explore, implement, verify, etc.)",
+        "Blocked_by references are internally consistent (no dangling refs)",
+        "go test ./... -short passes with all existing tests still green"
+      ],
+      "priority": 2,
+      "passes": true
+    }
+  ]
+}

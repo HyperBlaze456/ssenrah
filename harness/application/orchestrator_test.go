@@ -64,6 +64,58 @@ func setupTestOrchestrator(t *testing.T) (*OrchestratorService, *logging.MemoryE
 	return orch, logger
 }
 
+// setupTestOrchestratorWithDecomposer creates an OrchestratorService with a
+// Decomposer wired to the dummy provider, enabling end-to-end decompose→run tests.
+func setupTestOrchestratorWithDecomposer(t *testing.T) (*OrchestratorService, *logging.MemoryEventLogger) {
+	t.Helper()
+
+	cfg, err := config.DefaultHarnessConfig()
+	if err != nil {
+		t.Fatalf("load default config: %v", err)
+	}
+
+	profiles, err := infrastructure.BuildPolicyProfiles(cfg.PolicyTiers)
+	if err != nil {
+		t.Fatalf("build policy profiles: %v", err)
+	}
+
+	agentTypes := infrastructure.BuildAgentTypes(cfg.AgentTypes)
+
+	fullReg := tool.NewRegistry()
+	for _, name := range []string{"read_file", "write_file", "bash"} {
+		n := name
+		_ = fullReg.Register(&mockTool{
+			name:   n,
+			desc:   n + " tool",
+			schema: tool.ParameterSchema{},
+			execFn: func(_ context.Context, _ map[string]any) (tool.ToolResult, error) {
+				return tool.ToolResult{Content: n + " result", IsError: false}, nil
+			},
+		})
+	}
+
+	engine := policy.NewPolicyEngine()
+	logger := logging.NewMemoryEventLogger()
+	prov := dummy.NewProvider()
+
+	pool := NewWorkerPool(
+		cfg.Team.MaxWorkers,
+		prov,
+		fullReg,
+		engine,
+		profiles,
+		agentTypes,
+		logger,
+		shortTaskTimeout,
+	)
+
+	matcher := NewAgentMatcher(cfg.Team.CategoryMap, agentTypes, "default")
+	decomposer := NewDecomposer(prov, "dummy-v1")
+	orch := NewOrchestratorService(pool, matcher, logger, decomposer)
+
+	return orch, logger
+}
+
 func TestOrchestratorService_AddTask(t *testing.T) {
 	orch, _ := setupTestOrchestrator(t)
 
@@ -406,5 +458,81 @@ func TestOrchestratorService_AddTasks_DepNotFound(t *testing.T) {
 	err := orch.AddTasks(specs)
 	if err == nil {
 		t.Fatal("expected error for missing dependency, got nil")
+	}
+}
+
+// TestOrchestratorService_Decompose_WithDummy verifies end-to-end decomposition
+// using the dummy provider: Decompose creates tasks in the graph with valid
+// categories and agent types, then Run drives them all to terminal status.
+func TestOrchestratorService_Decompose_WithDummy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow integration test")
+	}
+
+	orch, logger := setupTestOrchestratorWithDecomposer(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	// Decompose a goal — should produce tasks without error.
+	count, err := orch.Decompose(ctx, "Add a new REST API endpoint for user profiles")
+	if err != nil {
+		t.Fatalf("Decompose: %v", err)
+	}
+	if count == 0 {
+		t.Fatal("Decompose returned 0 tasks")
+	}
+	t.Logf("Decomposed into %d tasks", count)
+
+	// Verify tasks are in the graph with assigned agent types.
+	all := orch.Graph().All()
+	if len(all) != count {
+		t.Errorf("graph has %d tasks, Decompose returned %d", len(all), count)
+	}
+	for _, tsk := range all {
+		if tsk.AgentType == "" {
+			t.Errorf("task %q has no agent type assigned", tsk.ID)
+		}
+		if tsk.Category == "" {
+			t.Errorf("task %q has no category", tsk.ID)
+		}
+		t.Logf("  task %q: category=%s agent=%s", tsk.ID, tsk.Category, tsk.AgentType)
+	}
+
+	// Run the full DAG and verify all tasks reach terminal status.
+	err = orch.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	stats := orch.Stats()
+	if stats.Pending+stats.Ready+stats.Running != 0 {
+		t.Errorf("expected all tasks terminal, got pending=%d ready=%d running=%d",
+			stats.Pending, stats.Ready, stats.Running)
+	}
+
+	// Verify lifecycle events were logged.
+	teamStarted := logger.EventsByType(event.EventTeamStarted)
+	if len(teamStarted) == 0 {
+		t.Error("expected EventTeamStarted to be logged")
+	}
+	taskCreated := logger.EventsByType(event.EventTaskCreated)
+	if len(taskCreated) < count {
+		t.Errorf("expected at least %d EventTaskCreated, got %d", count, len(taskCreated))
+	}
+	teamCompleted := logger.EventsByType(event.EventTeamCompleted)
+	if len(teamCompleted) == 0 {
+		t.Error("expected EventTeamCompleted to be logged")
+	}
+}
+
+// TestOrchestratorService_Decompose_NoDecomposer verifies that calling Decompose
+// without a configured decomposer returns an error.
+func TestOrchestratorService_Decompose_NoDecomposer(t *testing.T) {
+	orch, _ := setupTestOrchestrator(t) // no decomposer
+
+	_, err := orch.Decompose(context.Background(), "Do something")
+	if err == nil {
+		t.Fatal("expected error when no decomposer configured, got nil")
 	}
 }

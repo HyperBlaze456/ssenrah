@@ -1,3 +1,0 @@
-{"timestamp":"2026-03-05T23:33:43.508Z","type":"hook_dispatch","event":"session-start","source":"native","enabled":false,"reason":"plugins_disabled"}
-{"timestamp":"2026-03-05T23:35:54.411Z","type":"hook_dispatch","event":"session-end","source":"native","enabled":false,"reason":"plugins_disabled"}
-{"timestamp":"2026-03-05T23:35:56.458Z","type":"hook_dispatch","event":"session-start","source":"native","enabled":false,"reason":"plugins_disabled"}

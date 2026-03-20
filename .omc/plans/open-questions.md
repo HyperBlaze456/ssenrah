@@ -15,3 +15,10 @@
 - [ ] Should the `alwaysAllow` session map persist across agent type switches? — If a user always-allows `read_file` in the default agent, then switches to reader agent, should that carry over? Current plan: yes (session-scoped, not agent-scoped).
 - [ ] Should `ApplyAgentType()` rebuild the tool registry (filtering from full registry), or should it just change which tools are sent to the LLM in `buildRequest()`? — Registry filtering is cleaner but means the agent literally cannot call unlisted tools. Request filtering is softer (tool still exists, just not offered to LLM).
 - [ ] Event log retention: should `MemoryEventLogger` have a max capacity or grow unbounded for the session? — For v0.4a in-memory is fine, but long sessions could accumulate thousands of events.
+
+## team-mode-v1-conversational-decomposition - 2026-03-18
+- [ ] Should the [G] keybinding be uppercase-only (Shift+G) or both cases? — If both `g` and `G` are bound, pressing lowercase `g` during review triggers approval instead of typing into the input field. Recommendation: bind only uppercase `G` (Shift+G) to avoid conflicts, or rely solely on the text command "go".
+- [ ] Should the existing `teamDecomposeResultMsg` handler (app.go:258-266) be kept as a fallback or removed? — Keeping it maintains backward compat if any future code path uses the old fire-and-forget flow. Removing it simplifies the codebase. Recommendation: keep it with a deprecation comment.
+- [ ] What happens if the user types `/team <new goal>` while already in PhaseDecompositionReview? — Options: (a) reject with "already reviewing a decomposition", (b) silently replace with new decomposition. Recommendation: option (a) for v1 to avoid confusion.
+- [ ] Should re-decomposition feedback preserve full conversation history (all prior feedback rounds) or only the latest? — Full history gives better LLM context but grows token usage. Recommendation: include original goal + latest plan + latest feedback only for v1.
+- [x] Does `SessionService` currently expose a `Phase()` getter? — RESOLVED: No, but `Status().Phase` works. Plan Step 5j adds a convenience `Phase()` getter (1 line).

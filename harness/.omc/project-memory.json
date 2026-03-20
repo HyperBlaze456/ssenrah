@@ -125,14 +125,20 @@
   "hotPaths": [
     {
       "path": "",
-      "accessCount": 10,
-      "lastAccessed": 1773388116853,
+      "accessCount": 18,
+      "lastAccessed": 1773762940211,
       "type": "directory"
     },
     {
+      "path": "tui/app.go",
+      "accessCount": 15,
+      "lastAccessed": 1773762979592,
+      "type": "file"
+    },
+    {
       "path": "application/agent.go",
-      "accessCount": 9,
-      "lastAccessed": 1773388227174,
+      "accessCount": 10,
+      "lastAccessed": 1773760862831,
       "type": "file"
     },
     {
@@ -142,33 +148,63 @@
       "type": "file"
     },
     {
-      "path": "tui/app.go",
-      "accessCount": 7,
-      "lastAccessed": 1773388035029,
+      "path": "tui/statusbar.go",
+      "accessCount": 8,
+      "lastAccessed": 1773762925731,
       "type": "file"
     },
     {
-      "path": "main.go",
-      "accessCount": 6,
-      "lastAccessed": 1773388093806,
+      "path": "application/orchestrator_test.go",
+      "accessCount": 8,
+      "lastAccessed": 1773762955347,
       "type": "file"
     },
     {
       "path": "tui/sidebar.go",
-      "accessCount": 5,
-      "lastAccessed": 1773388054098,
+      "accessCount": 7,
+      "lastAccessed": 1773762363606,
       "type": "file"
     },
     {
-      "path": "tui/statusbar.go",
-      "accessCount": 5,
-      "lastAccessed": 1773388069213,
+      "path": "main.go",
+      "accessCount": 7,
+      "lastAccessed": 1773762377031,
+      "type": "file"
+    },
+    {
+      "path": "application/orchestrator.go",
+      "accessCount": 7,
+      "lastAccessed": 1773762970546,
+      "type": "file"
+    },
+    {
+      "path": "infrastructure/dummy/provider.go",
+      "accessCount": 6,
+      "lastAccessed": 1773755242379,
       "type": "file"
     },
     {
       "path": "infrastructure/logging/event_logger.go",
+      "accessCount": 6,
+      "lastAccessed": 1773760816530,
+      "type": "file"
+    },
+    {
+      "path": "infrastructure/dummy/provider_test.go",
       "accessCount": 5,
-      "lastAccessed": 1773388240384,
+      "lastAccessed": 1773755268110,
+      "type": "file"
+    },
+    {
+      "path": "application/decomposer.go",
+      "accessCount": 5,
+      "lastAccessed": 1773762913950,
+      "type": "file"
+    },
+    {
+      "path": "domain/task/graph.go",
+      "accessCount": 5,
+      "lastAccessed": 1773762925652,
       "type": "file"
     },
     {
@@ -190,6 +226,30 @@
       "type": "file"
     },
     {
+      "path": "domain/event/models.go",
+      "accessCount": 4,
+      "lastAccessed": 1773760839103,
+      "type": "file"
+    },
+    {
+      "path": "tui/messages.go",
+      "accessCount": 4,
+      "lastAccessed": 1773762914751,
+      "type": "file"
+    },
+    {
+      "path": "application/matcher.go",
+      "accessCount": 4,
+      "lastAccessed": 1773762924733,
+      "type": "file"
+    },
+    {
+      "path": "application/decomposer_test.go",
+      "accessCount": 4,
+      "lastAccessed": 1773762956326,
+      "type": "file"
+    },
+    {
       "path": "domain/policy/port.go",
       "accessCount": 3,
       "lastAccessed": 1773385153379,
@@ -199,12 +259,6 @@
       "path": "domain/event/port.go",
       "accessCount": 3,
       "lastAccessed": 1773385154338,
-      "type": "file"
-    },
-    {
-      "path": "domain/event/models.go",
-      "accessCount": 3,
-      "lastAccessed": 1773385154789,
       "type": "file"
     },
     {
@@ -232,27 +286,75 @@
       "type": "file"
     },
     {
+      "path": "infrastructure/config/defaults.go",
+      "accessCount": 3,
+      "lastAccessed": 1773754752895,
+      "type": "file"
+    },
+    {
+      "path": "ARCHITECTURE.md",
+      "accessCount": 3,
+      "lastAccessed": 1773762353226,
+      "type": "file"
+    },
+    {
+      "path": "domain/provider/port.go",
+      "accessCount": 3,
+      "lastAccessed": 1773762757089,
+      "type": "file"
+    },
+    {
+      "path": "tui/chat.go",
+      "accessCount": 3,
+      "lastAccessed": 1773762915117,
+      "type": "file"
+    },
+    {
+      "path": "tui/keys.go",
+      "accessCount": 3,
+      "lastAccessed": 1773762915933,
+      "type": "file"
+    },
+    {
+      "path": "domain/session/status.go",
+      "accessCount": 3,
+      "lastAccessed": 1773762916374,
+      "type": "file"
+    },
+    {
+      "path": "tui/approval.go",
+      "accessCount": 3,
+      "lastAccessed": 1773762968126,
+      "type": "file"
+    },
+    {
       "path": "go.mod",
       "accessCount": 2,
       "lastAccessed": 1773384755586,
       "type": "file"
     },
     {
-      "path": "infrastructure/config/defaults.go",
+      "path": "infrastructure/config/defaults.yaml",
       "accessCount": 2,
-      "lastAccessed": 1773387247055,
+      "lastAccessed": 1773760816413,
+      "type": "file"
+    },
+    {
+      "path": "application/worker_pool.go",
+      "accessCount": 2,
+      "lastAccessed": 1773760856714,
+      "type": "file"
+    },
+    {
+      "path": "domain/task/models.go",
+      "accessCount": 2,
+      "lastAccessed": 1773762356270,
       "type": "file"
     },
     {
       "path": "domain/shared/message.go",
       "accessCount": 1,
       "lastAccessed": 1773384735265,
-      "type": "file"
-    },
-    {
-      "path": "infrastructure/config/defaults.yaml",
-      "accessCount": 1,
-      "lastAccessed": 1773384760918,
       "type": "file"
     },
     {
@@ -289,6 +391,36 @@
       "path": "application/policy_integration_test.go",
       "accessCount": 1,
       "lastAccessed": 1773388310282,
+      "type": "file"
+    },
+    {
+      "path": "application/worker_pool_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1773754743502,
+      "type": "file"
+    },
+    {
+      "path": "domain/task/category.go",
+      "accessCount": 1,
+      "lastAccessed": 1773755119994,
+      "type": "file"
+    },
+    {
+      "path": "tui/input.go",
+      "accessCount": 1,
+      "lastAccessed": 1773762356053,
+      "type": "file"
+    },
+    {
+      "path": "tui/theme.go",
+      "accessCount": 1,
+      "lastAccessed": 1773762375486,
+      "type": "file"
+    },
+    {
+      "path": "tui/layout.go",
+      "accessCount": 1,
+      "lastAccessed": 1773762376304,
       "type": "file"
     }
   ],
