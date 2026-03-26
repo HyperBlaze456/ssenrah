@@ -1,43 +1,27 @@
 {
-  "name": "ssenrah-examples",
-  "version": "1.0.0",
-  "description": "Example agent harness implementation in TypeScript",
+  "name": "@ssenrah/harness",
+  "version": "0.1.0",
+  "description": "Agent transparency layer — event capture, redaction, and CLI for Claude Code hooks",
+  "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "ssenrah": "dist/cli.js",
+    "ssenrah-hook": "dist/hook.js"
+  },
   "scripts": {
     "build": "tsc",
-    "start": "node dist/index.js",
-    "dev": "ts-node index.ts",
-    "agent": "ts-node agent-cli.ts",
-    "team": "ts-node agent-cli.ts --team",
-    "demo:harness": "ts-node demo-harness.ts",
-    "demo:vision-qa": "ts-node demo-vision-qa.ts",
-    "eval:baseline": "ts-node evals/run-baseline.ts",
-    "test": "jest --passWithNoTests",
-    "test:watch": "jest --watch",
-    "lint": "eslint . --ext .ts"
-  },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
-    "@google/genai": "^1.42.0",
-    "dotenv": "^17.3.1"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "hook": "tsx src/hook.ts",
+    "cli": "tsx src/cli.ts"
   },
   "devDependencies": {
-    "@types/jest": "^29.5.0",
-    "@types/node": "^20.0.0",
-    "jest": "^29.5.0",
-    "ts-jest": "^29.1.0",
-    "ts-node": "^10.9.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0",
+    "tsx": "^4.19.0",
+    "@types/node": "^22.0.0"
   },
-  "jest": {
-    "preset": "ts-jest",
-    "testEnvironment": "node",
-    "testMatch": [
-      "**/*.test.ts"
-    ],
-    "collectCoverageFrom": [
-      "./**/*.ts",
-      "!dist/**"
-    ]
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
   }
 }

@@ -2,13 +2,13 @@
 
 > **[Architecture Reference](ARCHITECTURE.md)** — full specs, core logic, provider system, task lifecycle, policy engine, and all harness features.
 
-## Design Decisions
+## Philosophy
 
-### Task Completion Ownership
-Workers do NOT mark tasks as completed. Workers submit their results, but the **orchestrator** owns task completion. Before marking a task done, the orchestrator must verify the work — typically by spawning a separate verifier/tester agent to validate the output. This ensures quality gating at the orchestration layer.
+[Documentation](docs/harness_architecutre/initial_philosophy.md)
 
-### Agent Type System
-Agent types are predefined schemas (not ad-hoc). Users define agent types with specific tool sets, models, and isolation configs. The orchestrator selects the appropriate agent type per task — agents don't dynamically configure themselves.
+We are currently working on the MVT v1 scope defined along with gstack's Offic hours, CEO review and Eng review.
+
+On each major feature implementation we would commit our changes.
 
 # ssenrah — Harness Configurer (GUI)
 

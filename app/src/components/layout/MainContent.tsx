@@ -15,8 +15,12 @@ import { MemoryPanel } from "@/components/memory/MemoryPanel";
 import { AgentsPanel } from "@/components/agents/AgentsPanel";
 import { SkillsPanel } from "@/components/skills/SkillsPanel";
 import { EffectivePanel } from "@/components/visualizer/EffectivePanel";
+import { ActivityPanel } from "@/components/monitor/ActivityPanel";
+import { SessionsPanel } from "@/components/monitor/SessionsPanel";
+import { CostPanel } from "@/components/monitor/CostPanel";
+import { AlertsPanel } from "@/components/monitor/AlertsPanel";
 import type { PanelId } from "@/types";
-import { PANELS } from "@/types";
+import { PANELS, MONITOR_PANELS, isMonitorPanel } from "@/types";
 
 const PANEL_COMPONENTS: Partial<Record<PanelId, React.ComponentType>> = {
   permissions: PermissionsPanel,
@@ -31,12 +35,19 @@ const PANEL_COMPONENTS: Partial<Record<PanelId, React.ComponentType>> = {
   agents: AgentsPanel,
   skills: SkillsPanel,
   effective: EffectivePanel,
+  activity: ActivityPanel,
+  sessions: SessionsPanel,
+  cost: CostPanel,
+  alerts: AlertsPanel,
 };
 
 export function MainContent() {
   const activePanel = useUiStore((s) => s.activePanel);
   const activeScope = useUiStore((s) => s.activeScope);
-  const panel = PANELS.find((p) => p.id === activePanel);
+  const isMonitor = isMonitorPanel(activePanel);
+  const panel =
+    PANELS.find((p) => p.id === activePanel) ??
+    MONITOR_PANELS.find((p) => p.id === activePanel);
   const readOnly = activeScope === "managed";
   const PanelComponent = PANEL_COMPONENTS[activePanel];
 
@@ -44,13 +55,13 @@ export function MainContent() {
     <main className="flex flex-1 flex-col overflow-hidden">
       <PanelHeader
         title={panel?.label ?? ""}
-        scope={activeScope}
-        readOnly={readOnly}
+        scope={isMonitor ? undefined : activeScope}
+        readOnly={isMonitor ? false : readOnly}
       />
       <ScrollArea className="flex-1 p-6">
         {PanelComponent ? <PanelComponent /> : <PanelPlaceholder panelId={activePanel} />}
       </ScrollArea>
-      <EffectiveConfigFooter />
+      {!isMonitor && <EffectiveConfigFooter />}
     </main>
   );
 }

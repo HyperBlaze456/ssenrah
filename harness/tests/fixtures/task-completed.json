@@ -1,0 +1,12 @@
+{
+  "session_id": "abc-123-def",
+  "transcript_path": "/tmp/transcript.jsonl",
+  "cwd": "/home/user/project",
+  "hook_event_name": "TaskCompleted",
+  "permission_mode": "default",
+  "task_id": "task_42",
+  "task_subject": "Implement user authentication",
+  "task_description": "Add JWT-based auth flow",
+  "teammate_name": "builder",
+  "team_name": "dev-team"
+}

@@ -1,0 +1,8 @@
+{
+  "session_id": "abc-123-def",
+  "transcript_path": "/tmp/transcript.jsonl",
+  "cwd": "/home/user/project",
+  "hook_event_name": "SubagentStart",
+  "agent_id": "agent_007",
+  "agent_type": "Explore"
+}

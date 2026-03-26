@@ -1,6 +1,6 @@
 import { useUiStore } from "@/lib/store/ui";
 import { useProjectStore } from "@/lib/store/project";
-import { PANELS, type ConfigScope } from "@/types";
+import { PANELS, MONITOR_PANELS, type ConfigScope } from "@/types";
 import { ScopeBadge } from "../shared/ScopeBadge";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -97,7 +97,7 @@ export function Sidebar() {
       {/* Panel navigation */}
       <nav className={cn("flex-1 overflow-y-auto py-2", collapsed ? "px-1.5" : "px-2")}>
         {!collapsed && (
-          <p className="mb-2 px-2 text-xs font-medium uppercase tracking-wider text-sidebar-foreground/50">Panels</p>
+          <p className="mb-2 px-2 text-xs font-medium uppercase tracking-wider text-sidebar-foreground/50">Config</p>
         )}
         <div className="flex flex-col gap-0.5">
           {PANELS.map((panel) => {
@@ -131,6 +131,43 @@ export function Sidebar() {
             }
             return btn;
           })}
+        </div>
+
+        {/* Monitor section */}
+        <div className={cn("mt-4 pt-3 border-t border-sidebar-border")}>
+          {!collapsed && (
+            <p className="mb-2 px-2 text-xs font-medium uppercase tracking-wider text-sidebar-foreground/50">Monitor</p>
+          )}
+          <div className="flex flex-col gap-0.5">
+            {MONITOR_PANELS.map((panel) => {
+              const Icon = getPanelIcon(panel.icon);
+              const isActive = activePanel === panel.id;
+              const btn = (
+                <button
+                  key={panel.id}
+                  onClick={() => setPanel(panel.id)}
+                  className={cn(
+                    "flex w-full items-center rounded-md text-sm transition-colors",
+                    collapsed ? "justify-center px-2 py-2" : "gap-2 px-2 py-1.5",
+                    isActive
+                      ? "bg-sidebar-primary text-sidebar-primary-foreground"
+                      : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                  )}
+                >
+                  <Icon className={cn("shrink-0", collapsed ? "h-[18px] w-[18px]" : "h-4 w-4")} />
+                  {!collapsed && <span>{panel.label}</span>}
+                </button>
+              );
+              if (collapsed) {
+                return (
+                  <Tooltip key={panel.id} content={panel.label} side="right">
+                    {btn}
+                  </Tooltip>
+                );
+              }
+              return btn;
+            })}
+          </div>
         </div>
       </nav>
     </aside>

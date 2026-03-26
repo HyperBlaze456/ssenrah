@@ -11,7 +11,8 @@ export type SkillScope = "user" | "project";
 export type PanelId =
   | "permissions" | "hooks" | "mcp" | "memory" | "agents"
   | "skills" | "plugins" | "sandbox" | "env" | "display"
-  | "advanced" | "effective";
+  | "advanced" | "effective"
+  | "activity" | "sessions" | "cost" | "alerts";
 
 // Load status
 export type LoadStatus =
@@ -154,6 +155,63 @@ export interface Settings {
   [key: string]: unknown;
 }
 
+// ── Monitor types ──────────────────────────────────────
+// Matches harness/src/types.ts AgentEvent
+
+export interface AgentEvent {
+  id: string;
+  timestamp: string;
+  session_id: string;
+  hook_event_type: string;
+  cwd: string;
+  permission_mode?: string;
+  tool_name?: string;
+  tool_input?: Record<string, unknown>;
+  tool_use_id?: string;
+  tool_response?: unknown;
+  error?: string;
+  agent_id?: string;
+  agent_type?: string;
+  model?: string;
+  task_id?: string;
+  task_subject?: string;
+  task_description?: string;
+  teammate_name?: string;
+  team_name?: string;
+  notification_type?: string;
+  message?: string;
+  source?: string;
+  reason?: string;
+  cost_usd?: number;
+  _raw?: Record<string, unknown>;
+}
+
+export interface SessionSummary {
+  session_id: string;
+  event_count: number;
+  first_event: string;
+  last_event: string;
+  duration_seconds: number;
+  tool_uses: number;
+  errors: number;
+  subagents: number;
+  cost_usd: number;
+  top_tools: [string, number][];
+}
+
+export interface EventSummary {
+  total_events: number;
+  session_count: number;
+  tool_uses: number;
+  errors: number;
+  subagents: number;
+  tasks_completed: number;
+  total_cost: number;
+  first_event: string | null;
+  last_event: string | null;
+  top_tools: [string, number][];
+}
+
 // Panel metadata
 export interface PanelMeta {
   id: PanelId;
@@ -176,3 +234,16 @@ export const PANELS: PanelMeta[] = [
   { id: "advanced", label: "Advanced", icon: "Settings", scopes: ["user", "project", "local"] },
   { id: "effective", label: "Effective Config", icon: "Layers", scopes: [] },
 ];
+
+/** Monitor panels — scope-independent (reads from ~/.ssenrah/) */
+export const MONITOR_PANELS: PanelMeta[] = [
+  { id: "activity", label: "Activity", icon: "Activity", scopes: [] },
+  { id: "sessions", label: "Sessions", icon: "Clock", scopes: [] },
+  { id: "cost", label: "Cost", icon: "DollarSign", scopes: [] },
+  { id: "alerts", label: "Alerts", icon: "AlertTriangle", scopes: [] },
+];
+
+/** Check if a panel is a monitor panel (scope-independent) */
+export function isMonitorPanel(id: PanelId): boolean {
+  return MONITOR_PANELS.some((p) => p.id === id);
+}
