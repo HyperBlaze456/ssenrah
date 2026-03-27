@@ -55,6 +55,12 @@ npx tsx harness/src/cli.ts tail
 | `sessions` | List all sessions with event counts, duration, and cost |
 | `cost` | Detailed session cost breakdown (tokens + estimated USD) |
 | `cost --session abc123` | Cost for a specific session |
+| `reasoning` | Decision chain from transcripts — thinking, reasoning, tool decisions (V-3) |
+| `reasoning --session abc123` | Reasoning for a specific session |
+| `anomalies` | Detect agent behavior anomalies — loops, thrashing, cascades, cost spikes (V-4) |
+| `anomalies --session abc123` | Check a specific session |
+| `verify` | Session verification report — files changed, tests run, errors (V-5) |
+| `verify --session abc123` | Verify a specific session |
 | `tail` | Follow new events in real-time (Ctrl+C to stop) |
 
 ## Where Events Are Stored
@@ -132,4 +138,4 @@ cd harness/
 npm test
 ```
 
-55 tests across 5 test files: redaction patterns, hook handler, CLI commands, cost tracking, and escalation engine.
+96 tests across 8 test files: redaction, hook handler, CLI, cost tracking, escalation, reasoning extraction, anomaly detection, and session verification.

@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { redactPayload } from "./redact.js";
 import { calculateSessionCost } from "./cost.js";
 import { checkEscalation } from "./escalation.js";
+import { checkAnomalies } from "./anomaly.js";
 import type { AgentEvent, HookEventType } from "./types.js";
 
 const LOG_DIR =
@@ -184,6 +185,13 @@ async function main(): Promise<void> {
     checkEscalation(event.session_id);
   } catch {
     // Never let escalation failures crash the hook
+  }
+
+  // Run anomaly detection
+  try {
+    checkAnomalies(event.session_id);
+  } catch {
+    // Never let anomaly detection crash the hook
   }
 }
 

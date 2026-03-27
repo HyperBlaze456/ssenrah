@@ -19,6 +19,9 @@ import { ActivityPanel } from "@/components/monitor/ActivityPanel";
 import { SessionsPanel } from "@/components/monitor/SessionsPanel";
 import { CostPanel } from "@/components/monitor/CostPanel";
 import { AlertsPanel } from "@/components/monitor/AlertsPanel";
+import { ReasoningPanel } from "@/components/monitor/ReasoningPanel";
+import { AnomalyPanel } from "@/components/monitor/AnomalyPanel";
+import { VerifyPanel } from "@/components/monitor/VerifyPanel";
 import type { PanelId } from "@/types";
 import { PANELS, MONITOR_PANELS, isMonitorPanel } from "@/types";
 
@@ -39,6 +42,9 @@ const PANEL_COMPONENTS: Partial<Record<PanelId, React.ComponentType>> = {
   sessions: SessionsPanel,
   cost: CostPanel,
   alerts: AlertsPanel,
+  reasoning: ReasoningPanel,
+  anomalies: AnomalyPanel,
+  verify: VerifyPanel,
 };
 
 export function MainContent() {

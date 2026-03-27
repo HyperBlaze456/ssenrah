@@ -14,6 +14,9 @@ import { readFileSync, existsSync, statSync, openSync, readSync, closeSync } fro
 import { join } from "node:path";
 import type { AgentEvent } from "./types.js";
 import { calculateSessionCost, formatCost, formatTokens } from "./cost.js";
+import { extractDecisionChain, formatDecisionChain } from "./reasoning.js";
+import { detectAnomalies, formatAnomalies } from "./anomaly.js";
+import { verifySession, formatVerification } from "./verify.js";
 
 const LOG_DIR =
   process.env.SSENRAH_LOG_DIR ??
@@ -275,6 +278,94 @@ function cmdCost(opts: { session?: string }): void {
   console.log("╚══════════════════════════════════════════════════════╝");
 }
 
+function cmdVerify(opts: { session?: string }): void {
+  const events = loadEvents();
+
+  if (events.length === 0) {
+    console.log("No events recorded yet.");
+    return;
+  }
+
+  // Determine which session to verify
+  let sessionId: string;
+  if (opts.session) {
+    const match = events.find((e) => e.session_id.startsWith(opts.session!));
+    if (!match) {
+      console.log("No matching session found.");
+      return;
+    }
+    sessionId = match.session_id;
+  } else {
+    // Default: most recent session
+    const sessions = [...new Set(events.map((e) => e.session_id))];
+    sessionId = sessions[sessions.length - 1]!;
+  }
+
+  const report = verifySession(events, sessionId);
+  console.log(formatVerification(report));
+}
+
+function cmdAnomalies(opts: { session?: string }): void {
+  let events = loadEvents();
+
+  if (opts.session) {
+    events = events.filter((e) => e.session_id.startsWith(opts.session!));
+  }
+
+  if (events.length === 0) {
+    console.log("No events found.");
+    return;
+  }
+
+  const anomalies = detectAnomalies(events);
+  console.log(formatAnomalies(anomalies));
+}
+
+function cmdReasoning(opts: { session?: string; limit?: number }): void {
+  const events = loadEvents();
+
+  // Find sessions with transcript paths from _raw
+  const sessionTranscripts = new Map<string, string>();
+  for (const e of events) {
+    const raw = e._raw as Record<string, unknown> | undefined;
+    if (raw?.transcript_path && typeof raw.transcript_path === "string") {
+      sessionTranscripts.set(e.session_id, raw.transcript_path);
+    }
+  }
+
+  if (sessionTranscripts.size === 0) {
+    console.log("No sessions with transcript data found.");
+    return;
+  }
+
+  // Filter to specific session if requested
+  const entries = opts.session
+    ? [...sessionTranscripts.entries()].filter(([id]) =>
+        id.startsWith(opts.session!)
+      )
+    : [...sessionTranscripts.entries()].slice(-1); // Default: most recent session
+
+  if (entries.length === 0) {
+    console.log("No matching sessions found.");
+    return;
+  }
+
+  for (const [, transcriptPath] of entries) {
+    const chain = extractDecisionChain(transcriptPath);
+    if (!chain) {
+      console.log("No reasoning data found in transcript.");
+      continue;
+    }
+
+    // Apply limit if specified
+    if (opts.limit && chain.steps.length > opts.limit) {
+      chain.steps = chain.steps.slice(-opts.limit);
+    }
+
+    console.log(formatDecisionChain(chain));
+  }
+}
+
 // ── Argument parsing ──────────────────────────────────
 
 function main(): void {
@@ -315,8 +406,36 @@ function main(): void {
       cmdTail();
       break;
 
+    case "reasoning": {
+      const reasoningOpts: { session?: string; limit?: number } = {};
+      for (let i = 1; i < args.length; i++) {
+        if (args[i] === "--session" && args[i + 1]) reasoningOpts.session = args[++i];
+        else if (args[i] === "--limit" && args[i + 1]) reasoningOpts.limit = parseInt(args[++i]!, 10);
+      }
+      cmdReasoning(reasoningOpts);
+      break;
+    }
+
+    case "anomalies": {
+      const anomalyOpts: { session?: string } = {};
+      for (let i = 1; i < args.length; i++) {
+        if (args[i] === "--session" && args[i + 1]) anomalyOpts.session = args[++i];
+      }
+      cmdAnomalies(anomalyOpts);
+      break;
+    }
+
+    case "verify": {
+      const verifyOpts: { session?: string } = {};
+      for (let i = 1; i < args.length; i++) {
+        if (args[i] === "--session" && args[i + 1]) verifyOpts.session = args[++i];
+      }
+      cmdVerify(verifyOpts);
+      break;
+    }
+
     default:
-      console.log("Usage: ssenrah [summary | events | sessions | cost | tail]");
+      console.log("Usage: ssenrah [summary | events | sessions | cost | reasoning | anomalies | verify | tail]");
       console.log("");
       console.log("Commands:");
       console.log("  summary              Activity overview (default)");
@@ -327,6 +446,13 @@ function main(): void {
       console.log("  sessions             List all sessions");
       console.log("  cost                 Session cost breakdown (from transcripts)");
       console.log("    --session ID       Cost for a specific session");
+      console.log("  reasoning            Decision chain from transcripts (V-3)");
+      console.log("    --session ID       Reasoning for a specific session");
+      console.log("    --limit N          Max turns to display (default: all)");
+      console.log("  anomalies            Detect agent behavior anomalies (V-4)");
+      console.log("    --session ID       Check a specific session");
+      console.log("  verify               Session verification report (V-5)");
+      console.log("    --session ID       Verify a specific session");
       console.log("  tail                 Follow new events in real-time");
       break;
   }

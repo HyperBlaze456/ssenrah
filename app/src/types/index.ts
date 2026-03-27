@@ -12,7 +12,8 @@ export type PanelId =
   | "permissions" | "hooks" | "mcp" | "memory" | "agents"
   | "skills" | "plugins" | "sandbox" | "env" | "display"
   | "advanced" | "effective"
-  | "activity" | "sessions" | "cost" | "alerts";
+  | "activity" | "sessions" | "cost" | "alerts"
+  | "reasoning" | "anomalies" | "verify";
 
 // Load status
 export type LoadStatus =
@@ -273,6 +274,9 @@ export const MONITOR_PANELS: PanelMeta[] = [
   { id: "sessions", label: "Sessions", icon: "Clock", scopes: [] },
   { id: "cost", label: "Cost", icon: "DollarSign", scopes: [] },
   { id: "alerts", label: "Alerts", icon: "AlertTriangle", scopes: [] },
+  { id: "reasoning", label: "Reasoning", icon: "Brain", scopes: [] },
+  { id: "anomalies", label: "Anomalies", icon: "Radar", scopes: [] },
+  { id: "verify", label: "Verify", icon: "CheckSquare", scopes: [] },
 ];
 
 /** Check if a panel is a monitor panel (scope-independent) */
