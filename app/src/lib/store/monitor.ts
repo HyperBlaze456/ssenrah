@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { readTextFile, exists } from "@tauri-apps/plugin-fs";
-import { homeDir } from "@tauri-apps/api/path";
+import { homeDir, join } from "@tauri-apps/api/path";
 import type { AgentEvent, EventSummary, SessionSummary } from "@/types";
 
 interface MonitorStore {
@@ -21,7 +21,7 @@ interface MonitorStore {
 
 async function getEventsPath(): Promise<string> {
   const home = await homeDir();
-  return `${home}.ssenrah/events/events.jsonl`;
+  return await join(home, ".ssenrah", "events", "events.jsonl");
 }
 
 function parseJsonlEvents(content: string): AgentEvent[] {

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMonitorStore } from "@/lib/store/monitor";
 import { readTextFile, exists, writeTextFile } from "@tauri-apps/plugin-fs";
-import { homeDir } from "@tauri-apps/api/path";
+import { homeDir, join } from "@tauri-apps/api/path";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -74,7 +74,7 @@ export function AlertsPanel() {
     async function loadConfig() {
       try {
         const home = await homeDir();
-        const configPath = `${home}.ssenrah/escalation.json`;
+        const configPath = await join(home, ".ssenrah", "escalation.json");
         const fileExists = await exists(configPath);
         if (!fileExists) {
           setRules([]);
@@ -96,7 +96,7 @@ export function AlertsPanel() {
     setSaving(true);
     try {
       const home = await homeDir();
-      const configPath = `${home}.ssenrah/escalation.json`;
+      const configPath = await join(home, ".ssenrah", "escalation.json");
       await writeTextFile(
         configPath,
         JSON.stringify({ rules }, null, 2) + "\n"
