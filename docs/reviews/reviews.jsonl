@@ -1,0 +1,4 @@
+{"skill":"plan-ceo-review","timestamp":"2026-03-25T12:42:36Z","status":"issues_open","unresolved":3,"critical_gaps":0,"mode":"SCOPE_EXPANSION","scope_proposed":5,"scope_accepted":1,"scope_deferred":4,"commit":"98fefcc"}
+{"skill":"codex-plan-review","timestamp":"2026-03-25T12:42:37Z","status":"issues_found","source":"codex","commit":"98fefcc"}
+{"skill":"plan-eng-review","timestamp":"2026-03-25T13:08:39Z","status":"clean","unresolved":0,"critical_gaps":0,"issues_found":0,"mode":"SCOPE_REDUCED","commit":"98fefcc"}
+{"skill":"codex-plan-review","timestamp":"2026-03-25T13:08:40Z","status":"issues_found","source":"codex","commit":"98fefcc"}
