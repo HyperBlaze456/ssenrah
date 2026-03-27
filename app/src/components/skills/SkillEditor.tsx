@@ -169,6 +169,22 @@ export function SkillEditor({ scope, directory, onClose }: SkillEditorProps) {
           />
         </div>
 
+        {/* Effort */}
+        <div className="space-y-1">
+          <Label htmlFor="skill-effort">Effort Level</Label>
+          <Select
+            id="skill-effort"
+            value={(frontmatter.effort as string) ?? ""}
+            onChange={(e) => updateField("effort", e.target.value || undefined)}
+          >
+            <option value="">Default</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="max">Max</option>
+          </Select>
+        </div>
+
         {/* Allowed Tools */}
         <div className="space-y-1">
           <Label htmlFor="skill-allowed-tools">Allowed Tools</Label>
@@ -238,6 +254,67 @@ export function SkillEditor({ scope, directory, onClose }: SkillEditorProps) {
             checked={(frontmatter["user-invocable"] as boolean) ?? false}
             onCheckedChange={(v) => updateField("user-invocable", v || undefined)}
           />
+        </div>
+
+        {/* Background */}
+        <div className="flex items-center justify-between">
+          <div>
+            <Label>Background</Label>
+            <p className="text-xs text-muted-foreground">
+              Run this skill as a background task.
+            </p>
+          </div>
+          <Switch
+            checked={(frontmatter.background as boolean) ?? false}
+            onCheckedChange={(v) => updateField("background", v || undefined)}
+          />
+        </div>
+
+        {/* Shell */}
+        <div className="space-y-1">
+          <Label htmlFor="skill-shell">Shell</Label>
+          <Select
+            id="skill-shell"
+            value={(frontmatter.shell as string) ?? ""}
+            onChange={(e) => updateField("shell", e.target.value || undefined)}
+          >
+            <option value="">Default</option>
+            <option value="bash">Bash</option>
+            <option value="powershell">PowerShell</option>
+          </Select>
+        </div>
+
+        {/* Paths */}
+        <div className="space-y-1">
+          <Label htmlFor="skill-paths">Paths</Label>
+          <Input
+            id="skill-paths"
+            value={(frontmatter.paths as string) ?? ""}
+            onChange={(e) => updateField("paths", e.target.value)}
+            placeholder="src/**/*.ts"
+            className="font-mono text-sm"
+          />
+          <p className="text-xs text-muted-foreground">
+            Glob patterns for files this skill operates on.
+          </p>
+        </div>
+
+        {/* Memory */}
+        <div className="space-y-1">
+          <Label htmlFor="skill-memory">Memory Scope</Label>
+          <Select
+            id="skill-memory"
+            value={(frontmatter.memory as string) ?? ""}
+            onChange={(e) => updateField("memory", e.target.value || undefined)}
+          >
+            <option value="">None</option>
+            <option value="user">User</option>
+            <option value="project">Project</option>
+            <option value="local">Local</option>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            Persistent memory scope for this skill across sessions.
+          </p>
         </div>
       </div>
 

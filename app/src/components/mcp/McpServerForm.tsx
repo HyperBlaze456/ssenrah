@@ -15,7 +15,7 @@ import { ListEditor } from "@/components/shared/ListEditor";
 import { KeyValueEditor } from "@/components/shared/KeyValueEditor";
 import type { McpServerDefinition } from "@/lib/schemas/mcp";
 
-type TransportType = "stdio" | "http" | "sse";
+type TransportType = "stdio" | "http" | "sse" | "ws";
 
 interface McpServerFormProps {
   open: boolean;
@@ -29,6 +29,7 @@ function getTransportType(server?: McpServerDefinition): TransportType {
   if (!server) return "stdio";
   if ("type" in server && server.type === "http") return "http";
   if ("type" in server && server.type === "sse") return "sse";
+  if ("type" in server && server.type === "ws") return "ws";
   return "stdio";
 }
 
@@ -101,10 +102,17 @@ export function McpServerForm({
         ...(Object.keys(headers).length > 0 ? { headers } : {}),
         ...(oauth ? { oauth } : {}),
       };
-    } else {
+    } else if (transport === "sse") {
       if (!url.trim()) return;
       server = {
         type: "sse" as const,
+        url: url.trim(),
+        ...(Object.keys(headers).length > 0 ? { headers } : {}),
+      };
+    } else {
+      if (!url.trim()) return;
+      server = {
+        type: "ws" as const,
         url: url.trim(),
         ...(Object.keys(headers).length > 0 ? { headers } : {}),
       };
@@ -148,6 +156,7 @@ export function McpServerForm({
             <option value="stdio">stdio</option>
             <option value="http">http</option>
             <option value="sse">sse</option>
+            <option value="ws">ws (WebSocket)</option>
           </Select>
         </div>
 
@@ -255,6 +264,32 @@ export function McpServerForm({
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
                 placeholder="https://example.com/sse"
+                className="font-mono text-sm"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <Label>Headers</Label>
+              <KeyValueEditor
+                entries={headers}
+                onChange={setHeaders}
+                keyPlaceholder="Header-Name"
+                valuePlaceholder="value"
+              />
+            </div>
+          </>
+        )}
+
+        {/* ws fields */}
+        {transport === "ws" && (
+          <>
+            <div className="space-y-1">
+              <Label htmlFor="url-ws">URL</Label>
+              <Input
+                id="url-ws"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="wss://example.com/ws"
                 className="font-mono text-sm"
               />
             </div>

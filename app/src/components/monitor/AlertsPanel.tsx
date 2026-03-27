@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMonitorStore } from "@/lib/store/monitor";
 import { readTextFile, exists, writeTextFile } from "@tauri-apps/plugin-fs";
 import { homeDir, join } from "@tauri-apps/api/path";
@@ -55,9 +55,13 @@ function thresholdUnit(condition: string): string {
 }
 
 export function AlertsPanel() {
-  const alerts = useMonitorStore((s) => s.getAlerts());
+  const events = useMonitorStore((s) => s.events);
   const startAutoRefresh = useMonitorStore((s) => s.startAutoRefresh);
   const stopAutoRefresh = useMonitorStore((s) => s.stopAutoRefresh);
+  const alerts = useMemo(
+    () => events.filter((e) => e.hook_event_type === "_escalation"),
+    [events]
+  );
 
   const [rules, setRules] = useState<EscalationRule[]>([]);
   const [configLoading, setConfigLoading] = useState(true);

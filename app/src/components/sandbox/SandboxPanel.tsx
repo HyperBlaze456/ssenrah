@@ -6,6 +6,7 @@ import { ErrorBanner } from "@/components/shared/ErrorBanner";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { WritableScope } from "@/types";
@@ -29,6 +30,7 @@ export function SandboxPanel() {
 
   const sandbox = settings?.sandbox ?? {};
   const network = sandbox.network ?? {};
+  const filesystem = sandbox.filesystem ?? {};
 
   return (
     <div className="space-y-6">
@@ -36,12 +38,27 @@ export function SandboxPanel() {
       <div className="space-y-3">
         <div className="flex items-center gap-3">
           <Switch
-            checked={sandbox.enabled ?? false}
+            checked={sandbox.enabled ?? sandbox.enableSandbox ?? false}
             onCheckedChange={(checked) => update(writableScope, "sandbox.enabled", checked)}
             disabled={readOnly}
           />
           <Label>Enable Sandbox</Label>
         </div>
+
+        <div className="space-y-1">
+          <Label htmlFor="sandboxMode">Sandbox Mode</Label>
+          <Select
+            id="sandboxMode"
+            value={sandbox.sandboxMode ?? ""}
+            onChange={(e) => update(writableScope, "sandbox.sandboxMode", e.target.value || undefined)}
+            disabled={readOnly}
+            className="w-48"
+          >
+            <option value="">Default</option>
+            <option value="os_level">OS Level</option>
+          </Select>
+        </div>
+
         <div className="flex items-center gap-3">
           <Switch
             checked={sandbox.autoAllowBashIfSandboxed ?? false}
@@ -155,6 +172,49 @@ export function SandboxPanel() {
               onChange={(sockets) => update(writableScope, "sandbox.network.allowUnixSockets", sockets)}
               placeholder="/path/to/socket"
               readOnly={readOnly}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Separator />
+
+      {/* Filesystem Configuration */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">Filesystem Configuration</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center gap-3">
+            <Switch
+              checked={filesystem.allowManagedReadPathsOnly ?? false}
+              onCheckedChange={(checked) => update(writableScope, "sandbox.filesystem.allowManagedReadPathsOnly", checked)}
+              disabled={readOnly}
+            />
+            <Label>Allow managed read paths only</Label>
+          </div>
+
+          <div className="space-y-2">
+            <h4 className="text-sm font-medium">Allowed Read Paths</h4>
+            <p className="text-xs text-muted-foreground">Paths Bash can read from.</p>
+            <ListEditor
+              items={filesystem.allowRead ?? []}
+              onChange={(paths) => update(writableScope, "sandbox.filesystem.allowRead", paths.length > 0 ? paths : undefined)}
+              placeholder="/path/to/read"
+              readOnly={readOnly}
+              addLabel="Add Path"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <h4 className="text-sm font-medium">Allowed Write Paths</h4>
+            <p className="text-xs text-muted-foreground">Paths Bash can write to.</p>
+            <ListEditor
+              items={filesystem.allowWrite ?? []}
+              onChange={(paths) => update(writableScope, "sandbox.filesystem.allowWrite", paths.length > 0 ? paths : undefined)}
+              placeholder="/path/to/write"
+              readOnly={readOnly}
+              addLabel="Add Path"
             />
           </div>
         </CardContent>

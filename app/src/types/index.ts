@@ -72,15 +72,27 @@ export interface ConflictInfo {
 export type HookEvent =
   | "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
   | "PermissionRequest" | "UserPromptSubmit" | "Notification"
-  | "Stop" | "SubagentStart" | "SubagentStop"
+  | "Stop" | "StopFailure" | "SubagentStart" | "SubagentStop"
   | "SessionStart" | "SessionEnd" | "TeammateIdle"
-  | "TaskCompleted" | "PreCompact";
+  | "TaskCreated" | "TaskCompleted" | "PreCompact" | "PostCompact"
+  | "InstructionsLoaded" | "ConfigChange" | "CwdChanged" | "FileChanged"
+  | "WorktreeCreate" | "WorktreeRemove"
+  | "Elicitation" | "ElicitationResult";
 
 export interface HookDefinition {
-  type: "command" | "prompt" | "agent";
+  type: "command" | "http" | "prompt" | "agent";
   command?: string;
   prompt?: string;
   timeout?: number;
+  // command hook fields
+  async?: boolean;
+  shell?: string;
+  // http hook fields
+  url?: string;
+  headers?: Record<string, string>;
+  allowedEnvVars?: string[];
+  // prompt/agent hook fields
+  model?: string;
 }
 
 export interface HookGroup {
@@ -95,14 +107,23 @@ export interface Settings {
     ask?: string[];
     deny?: string[];
     additionalDirectories?: string[];
-    defaultMode?: "acceptEdits" | "reviewAll";
+    defaultMode?: "default" | "acceptEdits" | "plan" | "auto" | "dontAsk" | "bypassPermissions";
     disableBypassPermissionsMode?: "disable";
+    disableAutoMode?: boolean;
+  };
+  autoMode?: {
+    environment?: string;
+    allow?: string[];
+    soft_deny?: string[];
   };
   hooks?: Partial<Record<HookEvent, HookGroup[]>>;
   disableAllHooks?: boolean;
   allowManagedHooksOnly?: boolean;
+  allowManagedPermissionRulesOnly?: boolean;
   sandbox?: {
     enabled?: boolean;
+    enableSandbox?: boolean;
+    sandboxMode?: string;
     autoAllowBashIfSandboxed?: boolean;
     excludedCommands?: string[];
     allowUnsandboxedCommands?: boolean;
@@ -115,6 +136,11 @@ export interface Settings {
       httpProxyPort?: number;
       socksProxyPort?: number;
     };
+    filesystem?: {
+      allowRead?: string[];
+      allowWrite?: string[];
+      allowManagedReadPathsOnly?: boolean;
+    };
     enableWeakerNestedSandbox?: boolean;
   };
   env?: Record<string, string>;
@@ -124,9 +150,11 @@ export interface Settings {
   awsCredentialExport?: string;
   model?: string;
   availableModels?: string[];
+  modelOverrides?: Record<string, string>;
+  effortLevel?: "low" | "medium" | "high";
   outputStyle?: string;
   language?: string;
-  statusLine?: { type: "command"; command: string };
+  statusLine?: { type: "command"; command: string } | { type: "http"; url: string; interval?: number };
   fileSuggestion?: { type: "command"; command: string };
   respectGitignore?: boolean;
   prefersReducedMotion?: boolean;
@@ -138,6 +166,9 @@ export interface Settings {
   alwaysThinkingEnabled?: boolean;
   attribution?: { commit?: string; pr?: string };
   companyAnnouncements?: string[];
+  disallowedTools?: string[];
+  agent?: string;
+  memory?: "auto" | false;
   enabledPlugins?: Record<string, boolean>;
   extraKnownMarketplaces?: Record<string, unknown>;
   strictKnownMarketplaces?: object[];
@@ -147,6 +178,7 @@ export interface Settings {
   enabledMcpjsonServers?: string[];
   disabledMcpjsonServers?: string[];
   cleanupPeriodDays?: number;
+  skipDangerousModePermissionPrompt?: boolean;
   plansDirectory?: string;
   forceLoginMethod?: "claudeai" | "console";
   forceLoginOrgUUID?: string;

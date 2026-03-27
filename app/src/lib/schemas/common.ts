@@ -3,9 +3,12 @@ import { z } from "zod";
 export const HookEventSchema = z.enum([
   "PreToolUse", "PostToolUse", "PostToolUseFailure",
   "PermissionRequest", "UserPromptSubmit", "Notification",
-  "Stop", "SubagentStart", "SubagentStop",
+  "Stop", "StopFailure", "SubagentStart", "SubagentStop",
   "SessionStart", "SessionEnd", "TeammateIdle",
-  "TaskCompleted", "PreCompact",
+  "TaskCreated", "TaskCompleted", "PreCompact", "PostCompact",
+  "InstructionsLoaded", "ConfigChange", "CwdChanged", "FileChanged",
+  "WorktreeCreate", "WorktreeRemove",
+  "Elicitation", "ElicitationResult",
 ]);
 
 export const ConfigScopeSchema = z.enum(["user", "project", "local", "managed"]);

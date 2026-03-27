@@ -2,17 +2,27 @@ import { z } from "zod";
 import { HookEventSchema } from "./common";
 
 export const HookDefinitionSchema = z.object({
-  type: z.enum(["command", "prompt", "agent"]),
+  type: z.enum(["command", "http", "prompt", "agent"]),
   command: z.string().optional(),
   prompt: z.string().optional(),
   timeout: z.number().positive().optional(),
+  // command hook fields
+  async: z.boolean().optional(),
+  shell: z.string().optional(),
+  // http hook fields
+  url: z.string().optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+  allowedEnvVars: z.array(z.string()).optional(),
+  // prompt/agent hook fields
+  model: z.string().optional(),
 }).refine(
   (h) => {
     if (h.type === "command") return h.command != null;
     if (h.type === "prompt") return h.prompt != null;
+    if (h.type === "http") return h.url != null;
     return true;
   },
-  { message: "command hooks require 'command', prompt hooks require 'prompt'" }
+  { message: "command hooks require 'command', prompt hooks require 'prompt', http hooks require 'url'" }
 );
 
 export const HookGroupSchema = z.object({
@@ -36,13 +46,28 @@ export const SandboxNetworkSchema = z.object({
   socksProxyPort: z.number().int().positive().optional(),
 }).optional();
 
+export const SandboxFilesystemSchema = z.object({
+  allowRead: z.array(z.string()).optional(),
+  allowWrite: z.array(z.string()).optional(),
+  allowManagedReadPathsOnly: z.boolean().optional(),
+}).optional();
+
 export const SandboxSchema = z.object({
   enabled: z.boolean().optional(),
+  enableSandbox: z.boolean().optional(),
+  sandboxMode: z.string().optional(),
   autoAllowBashIfSandboxed: z.boolean().optional(),
   excludedCommands: z.array(z.string()).optional(),
   allowUnsandboxedCommands: z.boolean().optional(),
   network: SandboxNetworkSchema,
+  filesystem: SandboxFilesystemSchema,
   enableWeakerNestedSandbox: z.boolean().optional(),
+}).optional();
+
+export const AutoModeSchema = z.object({
+  environment: z.string().optional(),
+  allow: z.array(z.string()).optional(),
+  soft_deny: z.array(z.string()).optional(),
 }).optional();
 
 export const PermissionsSchema = z.object({
@@ -50,19 +75,27 @@ export const PermissionsSchema = z.object({
   ask: z.array(z.string()).optional(),
   deny: z.array(z.string()).optional(),
   additionalDirectories: z.array(z.string()).optional(),
-  defaultMode: z.enum(["acceptEdits", "reviewAll"]).optional(),
+  defaultMode: z.enum(["default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"]).optional(),
   disableBypassPermissionsMode: z.literal("disable").optional(),
+  disableAutoMode: z.boolean().optional(),
 }).optional();
 
 // Build hooks as a partial record of HookEvent -> HookGroup[]
 const HookGroupArraySchema = z.array(HookGroupSchema);
 const HooksRecordSchema = z.record(HookEventSchema, HookGroupArraySchema).optional();
 
+export const StatusLineSchema = z.union([
+  z.object({ type: z.literal("command"), command: z.string() }),
+  z.object({ type: z.literal("http"), url: z.string(), interval: z.number().optional() }),
+]).optional();
+
 export const SettingsSchema = z.object({
   permissions: PermissionsSchema,
+  autoMode: AutoModeSchema,
   hooks: HooksRecordSchema,
   disableAllHooks: z.boolean().optional(),
   allowManagedHooksOnly: z.boolean().optional(),
+  allowManagedPermissionRulesOnly: z.boolean().optional(),
 
   // MCP policy
   allowManagedMcpServersOnly: z.boolean().optional(),
@@ -85,9 +118,11 @@ export const SettingsSchema = z.object({
   // Model & Display
   model: z.string().optional(),
   availableModels: z.array(z.string()).optional(),
+  modelOverrides: z.record(z.string(), z.string()).optional(),
+  effortLevel: z.enum(["low", "medium", "high"]).optional(),
   outputStyle: z.string().optional(),
   language: z.string().optional(),
-  statusLine: z.object({ type: z.literal("command"), command: z.string() }).optional(),
+  statusLine: StatusLineSchema,
   fileSuggestion: z.object({ type: z.literal("command"), command: z.string() }).optional(),
   respectGitignore: z.boolean().optional(),
   prefersReducedMotion: z.boolean().optional(),
@@ -109,6 +144,13 @@ export const SettingsSchema = z.object({
   }).optional(),
   companyAnnouncements: z.array(z.string()).optional(),
 
+  // Tools
+  disallowedTools: z.array(z.string()).optional(),
+
+  // Agent & Memory
+  agent: z.string().optional(),
+  memory: z.union([z.literal("auto"), z.literal(false)]).optional(),
+
   // Plugins
   enabledPlugins: z.record(z.string(), z.boolean()).optional(),
   extraKnownMarketplaces: z.record(z.string(), z.unknown()).optional(),
@@ -117,6 +159,7 @@ export const SettingsSchema = z.object({
 
   // Session & Advanced
   cleanupPeriodDays: z.number().int().positive().optional(),
+  skipDangerousModePermissionPrompt: z.boolean().optional(),
   plansDirectory: z.string().optional(),
   forceLoginMethod: z.enum(["claudeai", "console"]).optional(),
   forceLoginOrgUUID: z.string().optional(),

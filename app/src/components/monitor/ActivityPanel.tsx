@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { useMonitorStore } from "@/lib/store/monitor";
+import { useEffect, useMemo } from "react";
+import { useMonitorStore, computeSummary } from "@/lib/store/monitor";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -60,9 +60,9 @@ export function ActivityPanel() {
   const events = useMonitorStore((s) => s.events);
   const loading = useMonitorStore((s) => s.loading);
   const error = useMonitorStore((s) => s.error);
-  const summary = useMonitorStore((s) => s.getSummary());
   const startAutoRefresh = useMonitorStore((s) => s.startAutoRefresh);
   const stopAutoRefresh = useMonitorStore((s) => s.stopAutoRefresh);
+  const summary = useMemo(() => computeSummary(events), [events]);
 
   useEffect(() => {
     startAutoRefresh(3000);

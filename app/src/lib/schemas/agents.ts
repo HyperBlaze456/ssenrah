@@ -10,10 +10,12 @@ export const AgentFrontmatterSchema = z.object({
     .enum(["default", "acceptEdits", "dontAsk", "bypassPermissions", "plan"])
     .optional(),
   maxTurns: z.number().int().min(1).max(100).optional(),
+  effort: z.enum(["low", "medium", "high", "max"]).optional(),
   skills: z.array(z.string()).optional(),
   background: z.boolean().optional(),
   isolation: z.literal("worktree").optional(),
   memory: z.enum(["user", "project", "local"]).optional(),
+  initialPrompt: z.string().optional(),
 });
 
 export type AgentFrontmatter = z.infer<typeof AgentFrontmatterSchema>;

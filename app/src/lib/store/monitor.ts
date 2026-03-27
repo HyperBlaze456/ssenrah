@@ -14,9 +14,6 @@ interface MonitorStore {
   loadEvents: () => Promise<void>;
   startAutoRefresh: (intervalMs?: number) => void;
   stopAutoRefresh: () => void;
-  getSummary: () => EventSummary;
-  getSessions: () => SessionSummary[];
-  getAlerts: () => AgentEvent[];
 }
 
 async function getEventsPath(): Promise<string> {
@@ -37,7 +34,7 @@ function parseJsonlEvents(content: string): AgentEvent[] {
   return events;
 }
 
-function computeSummary(events: AgentEvent[]): EventSummary {
+export function computeSummary(events: AgentEvent[]): EventSummary {
   if (events.length === 0) {
     return {
       total_events: 0,
@@ -89,7 +86,7 @@ function computeSummary(events: AgentEvent[]): EventSummary {
   };
 }
 
-function computeSessions(events: AgentEvent[]): SessionSummary[] {
+export function computeSessions(events: AgentEvent[]): SessionSummary[] {
   const map = new Map<
     string,
     {
@@ -195,8 +192,4 @@ export const useMonitorStore = create<MonitorStore>((set, get) => ({
     set({ autoRefresh: false, refreshInterval: null });
   },
 
-  getSummary: () => computeSummary(get().events),
-  getSessions: () => computeSessions(get().events),
-  getAlerts: () =>
-    get().events.filter((e) => e.hook_event_type === "_escalation"),
 }));

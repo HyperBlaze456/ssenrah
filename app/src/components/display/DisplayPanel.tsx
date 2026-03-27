@@ -50,6 +50,28 @@ export function DisplayPanel() {
         </div>
       </div>
 
+      {/* Effort Level */}
+      <div className="space-y-2">
+        <div className="space-y-1">
+          <Label htmlFor="effortLevel">Effort Level</Label>
+          <Select
+            id="effortLevel"
+            value={settings?.effortLevel ?? ""}
+            onChange={(e) => update(writableScope, "effortLevel", e.target.value || undefined)}
+            disabled={readOnly}
+            className="w-48"
+          >
+            <option value="">Not set (default)</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            Controls reasoning depth. Higher effort uses more tokens but produces deeper analysis.
+          </p>
+        </div>
+      </div>
+
       {/* Available Models */}
       <div className="space-y-2">
         <h3 className="text-sm font-medium">Available Models</h3>
@@ -262,26 +284,93 @@ export function DisplayPanel() {
         <div>
           <h3 className="text-sm font-medium">Custom Commands</h3>
           <p className="text-xs text-muted-foreground">
-            Shell commands used by Claude Code to populate the status line and file suggestions.
+            Shell commands or HTTP endpoints used by Claude Code to populate the status line and file suggestions.
           </p>
         </div>
+
+        {/* StatusLine type selector */}
         <div className="space-y-1">
-          <Label htmlFor="statusLineCommand">StatusLine Command</Label>
-          <Input
-            id="statusLineCommand"
-            value={settings?.statusLine?.command ?? ""}
-            onChange={(e) =>
-              update(
-                writableScope,
-                "statusLine",
-                e.target.value ? { type: "command" as const, command: e.target.value } : undefined,
-              )
-            }
+          <Label htmlFor="statusLineType">StatusLine Type</Label>
+          <Select
+            id="statusLineType"
+            value={settings?.statusLine?.type ?? ""}
+            onChange={(e) => {
+              const val = e.target.value;
+              if (!val) {
+                update(writableScope, "statusLine", undefined);
+              } else if (val === "command") {
+                update(writableScope, "statusLine", { type: "command" as const, command: "" });
+              } else {
+                update(writableScope, "statusLine", { type: "http" as const, url: "" });
+              }
+            }}
             disabled={readOnly}
-            placeholder="Shell command for status line"
-            className="font-mono text-sm"
-          />
+            className="w-48"
+          >
+            <option value="">None</option>
+            <option value="command">Command</option>
+            <option value="http">HTTP</option>
+          </Select>
         </div>
+
+        {settings?.statusLine?.type === "command" && (
+          <div className="space-y-1">
+            <Label htmlFor="statusLineCommand">StatusLine Command</Label>
+            <Input
+              id="statusLineCommand"
+              value={"command" in settings.statusLine ? settings.statusLine.command : ""}
+              onChange={(e) =>
+                update(writableScope, "statusLine", { type: "command" as const, command: e.target.value })
+              }
+              disabled={readOnly}
+              placeholder="Shell command for status line"
+              className="font-mono text-sm"
+            />
+          </div>
+        )}
+
+        {settings?.statusLine?.type === "http" && (
+          <>
+            <div className="space-y-1">
+              <Label htmlFor="statusLineUrl">StatusLine URL</Label>
+              <Input
+                id="statusLineUrl"
+                value={"url" in settings.statusLine ? settings.statusLine.url : ""}
+                onChange={(e) =>
+                  update(writableScope, "statusLine", {
+                    type: "http" as const,
+                    url: e.target.value,
+                    ...("interval" in settings.statusLine! && settings.statusLine.interval
+                      ? { interval: settings.statusLine.interval }
+                      : {}),
+                  })
+                }
+                disabled={readOnly}
+                placeholder="http://localhost:8080/status"
+                className="font-mono text-sm"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="statusLineInterval">Interval (seconds)</Label>
+              <Input
+                id="statusLineInterval"
+                type="number"
+                value={"interval" in settings.statusLine ? settings.statusLine.interval ?? "" : ""}
+                onChange={(e) =>
+                  update(writableScope, "statusLine", {
+                    type: "http" as const,
+                    url: "url" in settings.statusLine! ? settings.statusLine.url : "",
+                    ...(e.target.value ? { interval: Number(e.target.value) } : {}),
+                  })
+                }
+                disabled={readOnly}
+                placeholder="10"
+                className="w-32 font-mono text-sm"
+              />
+            </div>
+          </>
+        )}
+
         <div className="space-y-1">
           <Label htmlFor="fileSuggestionCommand">FileSuggestion Command</Label>
           <Input

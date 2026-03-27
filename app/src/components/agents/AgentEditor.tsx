@@ -230,6 +230,40 @@ export function AgentEditor({ scope, filename, onClose }: AgentEditorProps) {
           )}
         </div>
 
+        {/* Effort */}
+        <div className="space-y-1">
+          <Label htmlFor="agent-effort">Effort Level</Label>
+          <Select
+            id="agent-effort"
+            value={(frontmatter.effort as string) ?? ""}
+            onChange={(e) => updateField("effort", e.target.value || undefined)}
+          >
+            <option value="">Default</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="max">Max</option>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            Controls reasoning depth for this agent.
+          </p>
+        </div>
+
+        {/* Initial Prompt */}
+        <div className="space-y-1">
+          <Label htmlFor="agent-initial-prompt">Initial Prompt</Label>
+          <Input
+            id="agent-initial-prompt"
+            value={(frontmatter.initialPrompt as string) ?? ""}
+            onChange={(e) => updateField("initialPrompt", e.target.value)}
+            placeholder="Auto-submitted prompt when using --agent"
+            className="font-mono text-sm"
+          />
+          <p className="text-xs text-muted-foreground">
+            Prompt auto-submitted when agent starts via --agent flag.
+          </p>
+        </div>
+
         {/* Background */}
         <div className="flex items-center justify-between">
           <div>

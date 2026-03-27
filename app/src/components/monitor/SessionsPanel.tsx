@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { useMonitorStore } from "@/lib/store/monitor";
+import { useEffect, useMemo } from "react";
+import { useMonitorStore, computeSessions } from "@/lib/store/monitor";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -33,11 +33,12 @@ function formatCost(usd: number): string {
 }
 
 export function SessionsPanel() {
-  const sessions = useMonitorStore((s) => s.getSessions());
+  const events = useMonitorStore((s) => s.events);
   const loading = useMonitorStore((s) => s.loading);
   const error = useMonitorStore((s) => s.error);
   const startAutoRefresh = useMonitorStore((s) => s.startAutoRefresh);
   const stopAutoRefresh = useMonitorStore((s) => s.stopAutoRefresh);
+  const sessions = useMemo(() => computeSessions(events), [events]);
 
   useEffect(() => {
     startAutoRefresh(5000);

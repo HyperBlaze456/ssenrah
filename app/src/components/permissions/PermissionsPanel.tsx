@@ -7,7 +7,9 @@ import { ErrorBanner } from "@/components/shared/ErrorBanner";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { WritableScope } from "@/types";
 
 export function PermissionsPanel() {
@@ -28,6 +30,7 @@ export function PermissionsPanel() {
   }
 
   const permissions = settings?.permissions ?? {};
+  const autoMode = settings?.autoMode ?? {};
 
   return (
     <div className="space-y-6">
@@ -41,22 +44,97 @@ export function PermissionsPanel() {
           className="w-64"
         >
           <option value="">Not set</option>
+          <option value="default">Default</option>
           <option value="acceptEdits">Accept Edits</option>
-          <option value="reviewAll">Review All</option>
+          <option value="plan">Plan</option>
+          <option value="auto">Auto (Preview)</option>
+          <option value="dontAsk">Don't Ask</option>
+          <option value="bypassPermissions">Bypass Permissions</option>
         </Select>
       </div>
 
-      {/* Bypass mode */}
-      <div className="flex items-center gap-3">
-        <Switch
-          checked={permissions.disableBypassPermissionsMode === "disable"}
-          onCheckedChange={(checked) =>
-            update(writableScope, "permissions.disableBypassPermissionsMode", checked ? "disable" : undefined)
-          }
-          disabled={readOnly}
-        />
-        <Label>Disable bypass permissions mode</Label>
+      {/* Mode toggles */}
+      <div className="space-y-3">
+        <div className="flex items-center gap-3">
+          <Switch
+            checked={permissions.disableBypassPermissionsMode === "disable"}
+            onCheckedChange={(checked) =>
+              update(writableScope, "permissions.disableBypassPermissionsMode", checked ? "disable" : undefined)
+            }
+            disabled={readOnly}
+          />
+          <Label>Disable bypass permissions mode</Label>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <Switch
+            checked={permissions.disableAutoMode ?? false}
+            onCheckedChange={(checked) =>
+              update(writableScope, "permissions.disableAutoMode", checked || undefined)
+            }
+            disabled={readOnly}
+          />
+          <Label>Disable auto mode</Label>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <Switch
+            checked={settings?.allowManagedPermissionRulesOnly ?? false}
+            onCheckedChange={(checked) =>
+              update(writableScope, "allowManagedPermissionRulesOnly", checked || undefined)
+            }
+            disabled={readOnly}
+          />
+          <Label>Allow managed permission rules only</Label>
+        </div>
       </div>
+
+      <Separator />
+
+      {/* Auto Mode Configuration */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">Auto Mode Configuration</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-1">
+            <Label htmlFor="autoModeEnv">Environment Description</Label>
+            <Input
+              id="autoModeEnv"
+              value={autoMode.environment ?? ""}
+              onChange={(e) => update(writableScope, "autoMode.environment", e.target.value || undefined)}
+              disabled={readOnly}
+              placeholder="Describe trusted infrastructure (CI, sandbox, etc.)"
+              className="font-mono text-sm"
+            />
+            <p className="text-xs text-muted-foreground">
+              Prose description of trusted infrastructure for the safety classifier.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label>Auto-Allow Rules</Label>
+            <p className="text-xs text-muted-foreground">Custom allow rules that override soft_deny in auto mode.</p>
+            <ListEditor
+              items={autoMode.allow ?? []}
+              onChange={(rules) => update(writableScope, "autoMode.allow", rules.length > 0 ? rules : undefined)}
+              placeholder="Bash(npm run *)"
+              readOnly={readOnly}
+              addLabel="Add Rule"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>Soft Deny Rules</Label>
+            <p className="text-xs text-muted-foreground">Custom block rules for auto mode (overridden by allow).</p>
+            <ListEditor
+              items={autoMode.soft_deny ?? []}
+              onChange={(rules) => update(writableScope, "autoMode.soft_deny", rules.length > 0 ? rules : undefined)}
+              placeholder="Bash(rm *)"
+              readOnly={readOnly}
+              addLabel="Add Rule"
+            />
+          </div>
+        </CardContent>
+      </Card>
 
       <Separator />
 
@@ -97,6 +175,21 @@ export function PermissionsPanel() {
           category="deny"
           onChange={(rules) => update(writableScope, "permissions.deny", rules)}
           readOnly={readOnly}
+        />
+      </div>
+
+      <Separator />
+
+      {/* Disallowed Tools */}
+      <div className="space-y-2">
+        <h3 className="text-sm font-medium">Disallowed Tools</h3>
+        <p className="text-xs text-muted-foreground">Tools to disable entirely for the session.</p>
+        <ListEditor
+          items={settings?.disallowedTools ?? []}
+          onChange={(tools) => update(writableScope, "disallowedTools", tools.length > 0 ? tools : undefined)}
+          placeholder="WebSearch"
+          readOnly={readOnly}
+          addLabel="Add Tool"
         />
       </div>
 

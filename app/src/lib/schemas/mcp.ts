@@ -23,10 +23,17 @@ export const McpSseServerSchema = z.object({
   headers: z.record(z.string(), z.string()).optional(),
 });
 
+export const McpWsServerSchema = z.object({
+  type: z.literal("ws"),
+  url: z.string(),
+  headers: z.record(z.string(), z.string()).optional(),
+});
+
 export const McpServerDefinitionSchema = z.union([
   McpStdioServerSchema,
   McpHttpServerSchema,
   McpSseServerSchema,
+  McpWsServerSchema,
 ]);
 
 export const McpConfigSchema = z.object({

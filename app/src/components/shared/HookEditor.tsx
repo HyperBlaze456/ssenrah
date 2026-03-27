@@ -12,9 +12,12 @@ import type { HookEvent, HookGroup, HookDefinition } from "@/types";
 const HOOK_EVENTS: HookEvent[] = [
   "PreToolUse", "PostToolUse", "PostToolUseFailure",
   "PermissionRequest", "UserPromptSubmit", "Notification",
-  "Stop", "SubagentStart", "SubagentStop",
+  "Stop", "StopFailure", "SubagentStart", "SubagentStop",
   "SessionStart", "SessionEnd", "TeammateIdle",
-  "TaskCompleted", "PreCompact",
+  "TaskCreated", "TaskCompleted", "PreCompact", "PostCompact",
+  "InstructionsLoaded", "ConfigChange", "CwdChanged", "FileChanged",
+  "WorktreeCreate", "WorktreeRemove",
+  "Elicitation", "ElicitationResult",
 ];
 
 interface HookEditorProps {
@@ -260,16 +263,17 @@ function HookRow({ hook, readOnly, onChange, onRemove }: HookRowProps) {
             value={hook.type}
             onChange={(e) => {
               const type = e.target.value as HookDefinition["type"];
-              onChange({
-                type,
-                command: type === "command" ? hook.command ?? "" : undefined,
-                prompt: type === "prompt" || type === "agent" ? hook.prompt ?? "" : undefined,
-              });
+              const base: Partial<HookDefinition> = { type };
+              if (type === "command") base.command = hook.command ?? "";
+              if (type === "prompt" || type === "agent") base.prompt = hook.prompt ?? "";
+              if (type === "http") base.url = hook.url ?? "";
+              onChange(base);
             }}
             disabled={readOnly}
             className="w-28"
           >
             <option value="command">command</option>
+            <option value="http">http</option>
             <option value="prompt">prompt</option>
             <option value="agent">agent</option>
           </Select>
@@ -279,6 +283,16 @@ function HookRow({ hook, readOnly, onChange, onRemove }: HookRowProps) {
               value={hook.command ?? ""}
               onChange={(e) => onChange({ command: e.target.value })}
               placeholder="shell command"
+              className="flex-1 font-mono text-sm"
+              disabled={readOnly}
+            />
+          )}
+
+          {hook.type === "http" && (
+            <Input
+              value={hook.url ?? ""}
+              onChange={(e) => onChange({ url: e.target.value })}
+              placeholder="http://localhost:8080/hooks"
               className="flex-1 font-mono text-sm"
               disabled={readOnly}
             />
@@ -295,15 +309,64 @@ function HookRow({ hook, readOnly, onChange, onRemove }: HookRowProps) {
           )}
         </div>
 
+        {/* Command-specific: async and shell */}
+        {hook.type === "command" && (
+          <div className="flex gap-4 items-center">
+            <div className="flex gap-2 items-center">
+              <Label className="text-xs text-muted-foreground">Shell</Label>
+              <Input
+                value={hook.shell ?? ""}
+                onChange={(e) => onChange({ shell: e.target.value || undefined })}
+                placeholder="bash"
+                className="w-24 font-mono text-sm"
+                disabled={readOnly}
+              />
+            </div>
+            <div className="flex gap-2 items-center">
+              <input
+                type="checkbox"
+                checked={hook.async ?? false}
+                onChange={(e) => onChange({ async: e.target.checked || undefined })}
+                disabled={readOnly}
+                className="h-3.5 w-3.5"
+              />
+              <Label className="text-xs text-muted-foreground">Async</Label>
+            </div>
+          </div>
+        )}
+
+        {/* HTTP-specific: headers hint */}
+        {hook.type === "http" && (
+          <div className="space-y-2">
+            <p className="text-[10px] text-muted-foreground">
+              Use "Authorization": "Bearer $TOKEN" with allowedEnvVars for dynamic headers.
+            </p>
+          </div>
+        )}
+
+        {/* Prompt/Agent model override */}
+        {(hook.type === "prompt" || hook.type === "agent") && (
+          <div className="flex gap-2 items-center">
+            <Label className="text-xs text-muted-foreground">Model</Label>
+            <Input
+              value={hook.model ?? ""}
+              onChange={(e) => onChange({ model: e.target.value || undefined })}
+              placeholder="default"
+              className="w-40 font-mono text-sm"
+              disabled={readOnly}
+            />
+          </div>
+        )}
+
         <div className="flex gap-2 items-center">
-          <Label className="text-xs text-muted-foreground">Timeout (ms)</Label>
+          <Label className="text-xs text-muted-foreground">Timeout (s)</Label>
           <Input
             value={hook.timeout ?? ""}
             onChange={(e) => {
               const val = e.target.value ? Number(e.target.value) : undefined;
               onChange({ timeout: val });
             }}
-            placeholder="60000"
+            placeholder="600"
             type="number"
             className="w-32 font-mono text-sm"
             disabled={readOnly}
