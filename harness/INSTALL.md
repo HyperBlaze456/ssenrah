@@ -53,6 +53,10 @@ npx tsx harness/src/cli.ts tail
 | `events --session abc123` | Filter by session ID (prefix match) |
 | `events --limit 50` | Show more events |
 | `sessions` | List all sessions with event counts, duration, and cost |
+| `timeline` | Derived execution timeline across session, agents, tasks, and tools |
+| `timeline --session abc123 --limit 50` | Timeline for one session |
+| `agents` | Summarize main-agent and subagent activity |
+| `tasks` | Summarize task lifecycle and duration |
 | `cost` | Detailed session cost breakdown (tokens + estimated USD) |
 | `cost --session abc123` | Cost for a specific session |
 | `reasoning` | Decision chain from transcripts — thinking, reasoning, tool decisions (V-3) |
@@ -75,14 +79,16 @@ SSENRAH_LOG_DIR=/custom/path npx tsx harness/src/cli.ts summary
 
 ## What Gets Captured
 
-All 10 registered hook event types, including:
+Current Claude Code hook event types, including:
 
 - **Session lifecycle**: start, end
 - **Tool usage**: pre/post tool use, failures
 - **Agents**: subagent start/stop
-- **Tasks**: task completion events
+- **Tasks**: task creation and completion events
 - **Notifications**: permission prompts, idle prompts
 - **Stop events**: session stop reasons
+- **Filesystem/worktree**: cwd, file, and worktree changes
+- **Elicitation**: request/result interactions
 
 Each event includes: timestamp, session ID, event type, tool name, agent ID, and all fields the hook provides. The full raw payload is preserved in the `_raw` field for forward compatibility.
 

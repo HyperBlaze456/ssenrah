@@ -365,6 +365,7 @@ export function checkAnomalies(sessionId: string): void {
 
     const anomalyEvent: Partial<AgentEvent> = {
       id: randomUUID(),
+      schema_version: 2,
       timestamp: new Date().toISOString(),
       session_id: sessionId,
       hook_event_type: "_anomaly",

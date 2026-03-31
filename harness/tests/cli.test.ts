@@ -23,6 +23,7 @@ function writeTestEvents(events: Partial<AgentEvent>[]): void {
   const logFile = join(testLogDir, "events.jsonl");
   const lines = events.map((e) => JSON.stringify({
     id: `test-${Math.random().toString(36).slice(2)}`,
+    schema_version: 2,
     timestamp: new Date().toISOString(),
     session_id: "test-session",
     hook_event_type: "PostToolUse",
@@ -109,6 +110,71 @@ describe("CLI", () => {
       ]);
       const output = runCli("sessions");
       expect(output).toContain("2 sessions");
+    }, 30000);
+  });
+
+  describe("telemetry views", () => {
+    it("shows a normalized timeline", () => {
+      writeTestEvents([
+        { timestamp: "2026-04-01T00:00:00.000Z", hook_event_type: "SessionStart" },
+        {
+          timestamp: "2026-04-01T00:00:01.000Z",
+          hook_event_type: "TaskCreated",
+          task_id: "task-1",
+          task_subject: "Investigate flaky test",
+        },
+        {
+          timestamp: "2026-04-01T00:00:02.000Z",
+          hook_event_type: "PostToolUseFailure",
+          tool_name: "Bash",
+          error: "npm test failed",
+        },
+      ]);
+
+      const output = runCli("timeline --session test-session");
+      expect(output).toContain("session.start");
+      expect(output).toContain("task.create");
+      expect(output).toContain("tool.failure");
+    }, 30000);
+
+    it("summarizes agents and tasks", () => {
+      writeTestEvents([
+        { timestamp: "2026-04-01T00:00:00.000Z", hook_event_type: "SessionStart" },
+        {
+          timestamp: "2026-04-01T00:00:01.000Z",
+          hook_event_type: "SubagentStart",
+          agent_id: "agent_12345678",
+          agent_type: "Explore",
+        },
+        {
+          timestamp: "2026-04-01T00:00:02.000Z",
+          hook_event_type: "PostToolUse",
+          agent_id: "agent_12345678",
+          agent_type: "Explore",
+          tool_name: "Read",
+        },
+        {
+          timestamp: "2026-04-01T00:00:03.000Z",
+          hook_event_type: "TaskCreated",
+          task_id: "task-1",
+          task_subject: "Investigate flaky test",
+          teammate_name: "builder",
+        },
+        {
+          timestamp: "2026-04-01T00:00:04.000Z",
+          hook_event_type: "TaskCompleted",
+          task_id: "task-1",
+          task_subject: "Investigate flaky test",
+          teammate_name: "builder",
+        },
+      ]);
+
+      const agentsOutput = runCli("agents --session test-session");
+      expect(agentsOutput).toContain("Explore:");
+
+      const tasksOutput = runCli("tasks --session test-session");
+      expect(tasksOutput).toContain("task-1");
+      expect(tasksOutput).toContain("completed");
     }, 30000);
   });
 

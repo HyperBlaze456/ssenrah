@@ -21,6 +21,7 @@ import { checkEscalation } from "./escalation.js";
 import { checkAnomalies } from "./anomaly.js";
 import type { AgentEvent, HookEventType } from "./types.js";
 
+const SCHEMA_VERSION = 2;
 const LOG_DIR =
   process.env.SSENRAH_LOG_DIR ??
   join(process.env.HOME ?? "~", ".ssenrah", "events");
@@ -54,11 +55,73 @@ function parsePayload(raw: string): Record<string, unknown> | null {
 /**
  * Convert a raw hook payload into a structured AgentEvent.
  */
+const NORMALIZED_KEYS = new Set([
+  "session_id",
+  "transcript_path",
+  "cwd",
+  "hook_event_name",
+  "permission_mode",
+  "tool_name",
+  "tool_input",
+  "tool_use_id",
+  "tool_response",
+  "error",
+  "agent_id",
+  "agent_type",
+  "model",
+  "task_id",
+  "task_subject",
+  "task_description",
+  "teammate_name",
+  "team_name",
+  "notification_type",
+  "title",
+  "message",
+  "prompt",
+  "source",
+  "reason",
+  "trigger",
+  "compact_summary",
+  "mcp_server_name",
+  "stop_hook_active",
+  "last_assistant_message",
+  "config_source",
+  "file_path",
+  "memory_type",
+  "load_reason",
+  "globs",
+  "trigger_file_path",
+  "parent_file_path",
+  "old_cwd",
+  "new_cwd",
+  "event",
+  "worktree_path",
+  "agent_transcript_path",
+  "requested_schema",
+  "mode",
+  "url",
+  "action",
+  "content",
+  "elicitation_id",
+  "error_details",
+]);
+
+function extractExtras(payload: Record<string, unknown>): Record<string, unknown> | undefined {
+  const extras: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (NORMALIZED_KEYS.has(key)) continue;
+    extras[key] = value;
+  }
+  return Object.keys(extras).length > 0 ? extras : undefined;
+}
+
 function toAgentEvent(payload: Record<string, unknown>): AgentEvent {
   return {
     id: randomUUID(),
+    schema_version: SCHEMA_VERSION,
     timestamp: new Date().toISOString(),
     session_id: String(payload.session_id ?? "unknown"),
+    transcript_path: payload.transcript_path as string | undefined,
     hook_event_type: String(payload.hook_event_name ?? "unknown") as HookEventType,
     cwd: String(payload.cwd ?? ""),
     permission_mode: payload.permission_mode as string | undefined,
@@ -86,11 +149,18 @@ function toAgentEvent(payload: Record<string, unknown>): AgentEvent {
 
     // Notification
     notification_type: payload.notification_type as string | undefined,
+    title: payload.title as string | undefined,
     message: payload.message as string | undefined,
+    prompt: payload.prompt as string | undefined,
 
     // Session lifecycle
     source: payload.source as string | undefined,
     reason: payload.reason as string | undefined,
+    old_cwd: payload.old_cwd as string | undefined,
+    new_cwd: payload.new_cwd as string | undefined,
+    event: payload.event as string | undefined,
+    worktree_path: payload.worktree_path as string | undefined,
+    agent_transcript_path: payload.agent_transcript_path as string | undefined,
 
     // Compact
     trigger: payload.trigger as string | undefined,
@@ -98,14 +168,30 @@ function toAgentEvent(payload: Record<string, unknown>): AgentEvent {
 
     // MCP
     mcp_server_name: payload.mcp_server_name as string | undefined,
+    requested_schema: payload.requested_schema as Record<string, unknown> | undefined,
+    mode: payload.mode as string | undefined,
+    url: payload.url as string | undefined,
+    action: payload.action as string | undefined,
+    content: payload.content as unknown,
+    elicitation_id: payload.elicitation_id as string | undefined,
 
     // Stop
     stop_hook_active: payload.stop_hook_active as boolean | undefined,
     last_assistant_message: payload.last_assistant_message as string | undefined,
+    error_details: payload.error_details as unknown,
 
     // Config
-    config_source: payload.source as string | undefined,
+    config_source:
+      (payload.config_source as string | undefined) ??
+      (payload.source as string | undefined),
     file_path: payload.file_path as string | undefined,
+    memory_type: payload.memory_type as string | undefined,
+    load_reason: payload.load_reason as string | undefined,
+    globs: payload.globs as string[] | undefined,
+    trigger_file_path: payload.trigger_file_path as string | undefined,
+    parent_file_path: payload.parent_file_path as string | undefined,
+
+    extras: extractExtras(payload),
 
     // Preserve raw for forward compatibility
     _raw: payload,
@@ -152,6 +238,7 @@ async function main(): Promise<void> {
     // Malformed JSON — log the raw string as a parse error event.
     const errorEvent: AgentEvent = {
       id: randomUUID(),
+      schema_version: SCHEMA_VERSION,
       timestamp: new Date().toISOString(),
       session_id: "unknown",
       hook_event_type: "_parse_error",

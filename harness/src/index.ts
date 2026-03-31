@@ -18,3 +18,20 @@ export {
   checkEscalation,
 } from "./escalation.js";
 export type { SessionState, EscalationAlert } from "./escalation.js";
+export {
+  deriveTelemetryRecord,
+  deriveTelemetryTimeline,
+  summarizeAgents,
+  summarizeTasks,
+  formatTelemetryTimeline,
+  formatAgentSummaries,
+  formatTaskSummaries,
+} from "./telemetry.js";
+export type {
+  TelemetrySeverity,
+  TelemetryPhase,
+  TelemetryActorKind,
+  TelemetryRecord,
+  AgentSummary,
+  TaskSummary,
+} from "./telemetry.js";

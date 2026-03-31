@@ -217,6 +217,7 @@ export function fireAlerts(
 
     const escalationEvent: Partial<AgentEvent> = {
       id: randomUUID(),
+      schema_version: 2,
       timestamp: new Date().toISOString(),
       session_id: alert.session_id,
       hook_event_type: "_escalation",

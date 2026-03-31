@@ -193,8 +193,10 @@ export interface Settings {
 
 export interface AgentEvent {
   id: string;
+  schema_version?: number;
   timestamp: string;
   session_id: string;
+  transcript_path?: string;
   hook_event_type: string;
   cwd: string;
   permission_mode?: string;
@@ -212,10 +214,30 @@ export interface AgentEvent {
   teammate_name?: string;
   team_name?: string;
   notification_type?: string;
+  title?: string;
   message?: string;
+  prompt?: string;
   source?: string;
   reason?: string;
+  old_cwd?: string;
+  new_cwd?: string;
+  event?: string;
+  worktree_path?: string;
+  agent_transcript_path?: string;
+  requested_schema?: Record<string, unknown>;
+  mode?: string;
+  url?: string;
+  action?: string;
+  content?: unknown;
+  elicitation_id?: string;
+  error_details?: unknown;
+  memory_type?: string;
+  load_reason?: string;
+  globs?: string[];
+  trigger_file_path?: string;
+  parent_file_path?: string;
   cost_usd?: number;
+  extras?: Record<string, unknown>;
   _raw?: Record<string, unknown>;
 }
 

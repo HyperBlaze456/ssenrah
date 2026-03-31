@@ -8,6 +8,7 @@ function makeEvent(
 ): AgentEvent {
   return {
     id: randomUUID(),
+    schema_version: 2,
     timestamp: new Date().toISOString(),
     session_id: "session-1",
     hook_event_type: overrides.hook_event_type,

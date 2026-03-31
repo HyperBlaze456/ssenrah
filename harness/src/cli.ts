@@ -8,6 +8,9 @@
  *   ssenrah events --type X      Filter by hook event type
  *   ssenrah events --session Y   Filter by session ID
  *   ssenrah sessions             List all sessions with event counts
+ *   ssenrah timeline             Derived execution timeline
+ *   ssenrah agents               Agent/subagent activity summary
+ *   ssenrah tasks                Task lifecycle summary
  *   ssenrah tail                 Follow new events in real-time
  */
 import { readFileSync, existsSync, statSync, openSync, readSync, closeSync } from "node:fs";
@@ -17,6 +20,14 @@ import { calculateSessionCost, formatCost, formatTokens } from "./cost.js";
 import { extractDecisionChain, formatDecisionChain } from "./reasoning.js";
 import { detectAnomalies, formatAnomalies } from "./anomaly.js";
 import { verifySession, formatVerification } from "./verify.js";
+import {
+  deriveTelemetryTimeline,
+  summarizeAgents,
+  summarizeTasks,
+  formatTelemetryTimeline,
+  formatAgentSummaries,
+  formatTaskSummaries,
+} from "./telemetry.js";
 
 const LOG_DIR =
   process.env.SSENRAH_LOG_DIR ??
@@ -224,9 +235,13 @@ function cmdTail(): void {
 function cmdCost(opts: { session?: string }): void {
   const events = loadEvents();
 
-  // Find sessions with transcript paths from _raw
+  // Find sessions with transcript paths
   const sessionTranscripts = new Map<string, string>();
   for (const e of events) {
+    if (e.transcript_path) {
+      sessionTranscripts.set(e.session_id, e.transcript_path);
+      continue;
+    }
     const raw = e._raw as Record<string, unknown> | undefined;
     if (raw?.transcript_path && typeof raw.transcript_path === "string") {
       sessionTranscripts.set(e.session_id, raw.transcript_path);
@@ -324,9 +339,13 @@ function cmdAnomalies(opts: { session?: string }): void {
 function cmdReasoning(opts: { session?: string; limit?: number }): void {
   const events = loadEvents();
 
-  // Find sessions with transcript paths from _raw
+  // Find sessions with transcript paths
   const sessionTranscripts = new Map<string, string>();
   for (const e of events) {
+    if (e.transcript_path) {
+      sessionTranscripts.set(e.session_id, e.transcript_path);
+      continue;
+    }
     const raw = e._raw as Record<string, unknown> | undefined;
     if (raw?.transcript_path && typeof raw.transcript_path === "string") {
       sessionTranscripts.set(e.session_id, raw.transcript_path);
@@ -366,6 +385,24 @@ function cmdReasoning(opts: { session?: string; limit?: number }): void {
   }
 }
 
+function cmdTimeline(opts: { session?: string; actor?: string; limit?: number }): void {
+  const events = loadEvents();
+  const timeline = deriveTelemetryTimeline(events, opts);
+  console.log(formatTelemetryTimeline(timeline));
+}
+
+function cmdAgents(opts: { session?: string }): void {
+  const events = loadEvents();
+  const agents = summarizeAgents(events, opts);
+  console.log(formatAgentSummaries(agents));
+}
+
+function cmdTasks(opts: { session?: string }): void {
+  const events = loadEvents();
+  const tasks = summarizeTasks(events, opts);
+  console.log(formatTaskSummaries(tasks));
+}
+
 // ── Argument parsing ──────────────────────────────────
 
 function main(): void {
@@ -392,6 +429,37 @@ function main(): void {
     case "sessions":
       cmdSessions();
       break;
+
+    case "timeline": {
+      const timelineOpts: { session?: string; actor?: string; limit?: number } = {};
+      for (let i = 1; i < args.length; i++) {
+        if (args[i] === "--session" && args[i + 1]) timelineOpts.session = args[++i];
+        else if (args[i] === "--actor" && args[i + 1]) timelineOpts.actor = args[++i];
+        else if (args[i] === "--limit" && args[i + 1]) {
+          timelineOpts.limit = parseInt(args[++i]!, 10);
+        }
+      }
+      cmdTimeline(timelineOpts);
+      break;
+    }
+
+    case "agents": {
+      const agentOpts: { session?: string } = {};
+      for (let i = 1; i < args.length; i++) {
+        if (args[i] === "--session" && args[i + 1]) agentOpts.session = args[++i];
+      }
+      cmdAgents(agentOpts);
+      break;
+    }
+
+    case "tasks": {
+      const taskOpts: { session?: string } = {};
+      for (let i = 1; i < args.length; i++) {
+        if (args[i] === "--session" && args[i + 1]) taskOpts.session = args[++i];
+      }
+      cmdTasks(taskOpts);
+      break;
+    }
 
     case "cost": {
       const costOpts: { session?: string } = {};
@@ -435,7 +503,7 @@ function main(): void {
     }
 
     default:
-      console.log("Usage: ssenrah [summary | events | sessions | cost | reasoning | anomalies | verify | tail]");
+      console.log("Usage: ssenrah [summary | events | sessions | timeline | agents | tasks | cost | reasoning | anomalies | verify | tail]");
       console.log("");
       console.log("Commands:");
       console.log("  summary              Activity overview (default)");
@@ -444,6 +512,14 @@ function main(): void {
       console.log("    --session ID       Filter by session ID (prefix match)");
       console.log("    --limit N          Number of events to show (default: 20)");
       console.log("  sessions             List all sessions");
+      console.log("  timeline             Normalized event timeline");
+      console.log("    --session ID       Filter by session ID (prefix match)");
+      console.log("    --actor ID         Filter by actor id/label");
+      console.log("    --limit N          Number of timeline rows to show");
+      console.log("  agents               Summarize activity by main agent/subagent");
+      console.log("    --session ID       Filter by session ID (prefix match)");
+      console.log("  tasks                Summarize task lifecycle");
+      console.log("    --session ID       Filter by session ID (prefix match)");
       console.log("  cost                 Session cost breakdown (from transcripts)");
       console.log("    --session ID       Cost for a specific session");
       console.log("  reasoning            Decision chain from transcripts (V-3)");

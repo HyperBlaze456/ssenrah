@@ -1,5 +1,5 @@
 /**
- * All 22 Claude Code hook event types (March 2026).
+ * Current Claude Code hook event types (April 2026).
  * Reference: https://code.claude.com/docs/en/hooks
  */
 export type HookEventType =
@@ -13,11 +13,14 @@ export type HookEventType =
   | "Notification"
   | "SubagentStart"
   | "SubagentStop"
+  | "TaskCreated"
   | "Stop"
   | "StopFailure"
   | "TeammateIdle"
   | "TaskCompleted"
   | "ConfigChange"
+  | "CwdChanged"
+  | "FileChanged"
   | "WorktreeCreate"
   | "WorktreeRemove"
   | "PreCompact"
@@ -46,10 +49,13 @@ export interface HookBasePayload {
 export interface AgentEvent {
   /** UUID generated at capture time */
   id: string;
+  /** Incremented when the normalized event contract changes */
+  schema_version: number;
   /** ISO 8601 timestamp */
   timestamp: string;
   /** From hook payload */
   session_id: string;
+  transcript_path?: string;
   /** Hook event classification */
   hook_event_type: HookEventType | string;
   /** Current working directory */
@@ -80,11 +86,18 @@ export interface AgentEvent {
 
   // Notification fields
   notification_type?: string;
+  title?: string;
   message?: string;
+  prompt?: string;
 
   // Session lifecycle
   source?: string;
   reason?: string;
+  old_cwd?: string;
+  new_cwd?: string;
+  event?: string;
+  worktree_path?: string;
+  agent_transcript_path?: string;
 
   // Compact events
   trigger?: string;
@@ -92,17 +105,32 @@ export interface AgentEvent {
 
   // MCP/Elicitation
   mcp_server_name?: string;
+  requested_schema?: Record<string, unknown>;
+  mode?: string;
+  url?: string;
+  action?: string;
+  content?: unknown;
+  elicitation_id?: string;
 
   // Stop events
   stop_hook_active?: boolean;
   last_assistant_message?: string;
+  error_details?: unknown;
 
   // Config changes
   config_source?: string;
   file_path?: string;
+  memory_type?: string;
+  load_reason?: string;
+  globs?: string[];
+  trigger_file_path?: string;
+  parent_file_path?: string;
 
   // Cost (from Claude Code's built-in cost tracking, added by our adapter)
   cost_usd?: number;
+
+  /** Forward-compatible bag for non-normalized hook keys */
+  extras?: Record<string, unknown>;
 
   /** Raw payload preserved for forward compatibility */
   _raw?: Record<string, unknown>;

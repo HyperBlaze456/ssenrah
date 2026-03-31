@@ -22,6 +22,7 @@ let origHome: string | undefined;
 function makeEvent(overrides: Partial<AgentEvent>): AgentEvent {
   return {
     id: `test-${Math.random().toString(36).slice(2)}`,
+    schema_version: 2,
     timestamp: new Date().toISOString(),
     session_id: "test-session",
     hook_event_type: "PostToolUse",

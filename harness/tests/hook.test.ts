@@ -136,4 +136,57 @@ describe("hook handler", () => {
     expect(raw.session_id).toBe("abc-123-def");
     expect(raw.transcript_path).toBeDefined();
   }, 30000);
+
+  it("captures richer top-level hook telemetry fields", () => {
+    runHookWithStdin(
+      JSON.stringify({
+        session_id: "session-telemetry",
+        transcript_path: "/tmp/main-transcript.jsonl",
+        cwd: "/repo",
+        hook_event_name: "SubagentStop",
+        agent_id: "agent_12345678",
+        agent_type: "Research",
+        agent_transcript_path: "/tmp/subagent-transcript.jsonl",
+        reason: "completed",
+        worktree_path: "/repo/.worktrees/research",
+        custom_extra_field: "keep-me",
+      }),
+    );
+
+    const events = readEvents();
+    const event = events[0]!;
+    expect(event.schema_version).toBe(2);
+    expect(event.transcript_path).toBe("/tmp/main-transcript.jsonl");
+    expect(event.agent_transcript_path).toBe("/tmp/subagent-transcript.jsonl");
+    expect(event.worktree_path).toBe("/repo/.worktrees/research");
+    expect((event.extras as Record<string, unknown>).custom_extra_field).toBe("keep-me");
+  }, 30000);
+
+  it("captures elicitation and cwd-specific fields", () => {
+    runHookWithStdin(
+      JSON.stringify({
+        session_id: "session-telemetry",
+        transcript_path: "/tmp/main-transcript.jsonl",
+        cwd: "/repo",
+        hook_event_name: "ElicitationResult",
+        action: "accept",
+        content: { approved: true },
+        elicitation_id: "elicitation_42",
+        mode: "form",
+        url: "https://example.com/review",
+        old_cwd: "/repo",
+        new_cwd: "/repo/subdir",
+      }),
+    );
+
+    const events = readEvents();
+    const event = events[0]!;
+    expect(event.action).toBe("accept");
+    expect(event.elicitation_id).toBe("elicitation_42");
+    expect(event.mode).toBe("form");
+    expect(event.url).toBe("https://example.com/review");
+    expect(event.old_cwd).toBe("/repo");
+    expect(event.new_cwd).toBe("/repo/subdir");
+    expect(event.content).toEqual({ approved: true });
+  }, 30000);
 });
