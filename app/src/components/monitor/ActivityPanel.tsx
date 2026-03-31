@@ -1,7 +1,18 @@
-import { useEffect, useMemo } from "react";
-import { useMonitorStore, computeSummary } from "@/lib/store/monitor";
+import { useEffect, useMemo, useState } from "react";
+import { useMonitorStore, computeSummary, computeSessions } from "@/lib/store/monitor";
+import {
+  formatSeverityLabel,
+  getEventFingerprint,
+  getEventSeverity,
+  getSeverityBadgeVariant,
+  monitorSeverityRank,
+  type MonitorSeverity,
+} from "@/lib/monitor-utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import {
   Activity,
@@ -14,6 +25,19 @@ import {
   Bell,
   CheckCircle,
 } from "lucide-react";
+import type { AgentEvent } from "@/types";
+
+type SeverityFilter = "all" | MonitorSeverity;
+type ActivitySortMode = "severity" | "recent" | "oldest";
+
+interface EventGroup {
+  key: string;
+  representative: AgentEvent;
+  severity: MonitorSeverity;
+  count: number;
+  firstTimestamp: string;
+  lastTimestamp: string;
+}
 
 function getEventIcon(type: string) {
   if (type.includes("ToolUse")) return Terminal;
@@ -26,7 +50,7 @@ function getEventIcon(type: string) {
   return FileText;
 }
 
-function getEventColor(type: string): string {
+function getEventColor(type: string) {
   if (type.includes("Failure") || type.includes("error")) return "destructive";
   if (type === "_escalation") return "destructive";
   if (type.includes("Start")) return "default";
@@ -35,8 +59,8 @@ function getEventColor(type: string): string {
 }
 
 function formatTime(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleTimeString("en-US", {
+  const date = new Date(iso);
+  return date.toLocaleTimeString("en-US", {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
@@ -44,25 +68,160 @@ function formatTime(iso: string): string {
   });
 }
 
-function EventDetail({ event }: { event: { hook_event_type: string; tool_name?: string; agent_type?: string; task_subject?: string; notification_type?: string; message?: string; error?: string; reason?: string; source?: string } }) {
-  if (event.tool_name) return <span className="text-muted-foreground">{event.tool_name}</span>;
-  if (event.agent_type) return <span className="text-muted-foreground">{event.agent_type}</span>;
-  if (event.task_subject) return <span className="text-muted-foreground truncate max-w-[200px] inline-block align-bottom">{event.task_subject}</span>;
-  if (event.error) return <span className="text-destructive truncate max-w-[200px] inline-block align-bottom">{event.error}</span>;
-  if (event.notification_type) return <span className="text-muted-foreground">{event.notification_type}</span>;
-  if (event.message) return <span className="text-muted-foreground truncate max-w-[200px] inline-block align-bottom">{event.message}</span>;
-  if (event.reason) return <span className="text-muted-foreground">{event.reason}</span>;
-  if (event.source) return <span className="text-muted-foreground">{event.source}</span>;
+function formatSessionId(sessionId: string): string {
+  return `${sessionId.slice(0, 8)}…${sessionId.slice(-4)}`;
+}
+
+function matchesQuery(event: AgentEvent, query: string): boolean {
+  if (!query) return true;
+  const haystack = [
+    event.session_id,
+    event.hook_event_type,
+    event.tool_name,
+    event.message,
+    event.error,
+    event.reason,
+    event.notification_type,
+    event.task_subject,
+    event.agent_type,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  return haystack.includes(query);
+}
+
+function EventDetail({ event }: { event: AgentEvent }) {
+  if (event.tool_name) {
+    return <span className="text-muted-foreground">{event.tool_name}</span>;
+  }
+  if (event.agent_type) {
+    return <span className="text-muted-foreground">{event.agent_type}</span>;
+  }
+  if (event.task_subject) {
+    return (
+      <span className="inline-block max-w-[240px] truncate align-bottom text-muted-foreground">
+        {event.task_subject}
+      </span>
+    );
+  }
+  if (event.error) {
+    return (
+      <span className="inline-block max-w-[240px] truncate align-bottom text-destructive">
+        {event.error}
+      </span>
+    );
+  }
+  if (event.notification_type) {
+    return <span className="text-muted-foreground">{event.notification_type}</span>;
+  }
+  if (event.message) {
+    return (
+      <span className="inline-block max-w-[280px] truncate align-bottom text-muted-foreground">
+        {event.message}
+      </span>
+    );
+  }
+  if (event.reason) {
+    return <span className="text-muted-foreground">{event.reason}</span>;
+  }
   return null;
 }
 
 export function ActivityPanel() {
-  const events = useMonitorStore((s) => s.events);
-  const loading = useMonitorStore((s) => s.loading);
-  const error = useMonitorStore((s) => s.error);
-  const startAutoRefresh = useMonitorStore((s) => s.startAutoRefresh);
-  const stopAutoRefresh = useMonitorStore((s) => s.stopAutoRefresh);
-  const summary = useMemo(() => computeSummary(events), [events]);
+  const events = useMonitorStore((state) => state.events);
+  const loading = useMonitorStore((state) => state.loading);
+  const error = useMonitorStore((state) => state.error);
+  const startAutoRefresh = useMonitorStore((state) => state.startAutoRefresh);
+  const stopAutoRefresh = useMonitorStore((state) => state.stopAutoRefresh);
+  const focusedSessionIds = useMonitorStore((state) => state.focusedSessionIds);
+  const focusSingleSession = useMonitorStore((state) => state.focusSingleSession);
+  const clearFocusedSessions = useMonitorStore((state) => state.clearFocusedSessions);
+
+  const [query, setQuery] = useState("");
+  const [severityFilter, setSeverityFilter] = useState<SeverityFilter>("all");
+  const [sortMode, setSortMode] = useState<ActivitySortMode>("severity");
+
+  const sessions = useMemo(() => computeSessions(events), [events]);
+  const focusedSessions = useMemo(
+    () => sessions.filter((session) => focusedSessionIds.includes(session.session_id)),
+    [focusedSessionIds, sessions],
+  );
+  const scopedEvents = useMemo(
+    () =>
+      focusedSessionIds.length > 0
+        ? events.filter((event) => focusedSessionIds.includes(event.session_id))
+        : events,
+    [events, focusedSessionIds],
+  );
+  const summary = useMemo(() => computeSummary(scopedEvents), [scopedEvents]);
+
+  const visibleGroups = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    const filteredEvents = scopedEvents.filter((event) => {
+      const severity = getEventSeverity(event);
+      if (severityFilter !== "all" && severity !== severityFilter) return false;
+      return matchesQuery(event, normalizedQuery);
+    });
+
+    const grouped = new Map<string, EventGroup>();
+    for (const event of filteredEvents) {
+      const key = getEventFingerprint(event);
+      const severity = getEventSeverity(event);
+      const existing = grouped.get(key);
+      if (!existing) {
+        grouped.set(key, {
+          key,
+          representative: event,
+          severity,
+          count: 1,
+          firstTimestamp: event.timestamp,
+          lastTimestamp: event.timestamp,
+        });
+        continue;
+      }
+
+      existing.count += 1;
+      if (event.timestamp < existing.firstTimestamp) {
+        existing.firstTimestamp = event.timestamp;
+      }
+      if (event.timestamp >= existing.lastTimestamp) {
+        existing.lastTimestamp = event.timestamp;
+        existing.representative = event;
+      }
+      if (monitorSeverityRank(severity) > monitorSeverityRank(existing.severity)) {
+        existing.severity = severity;
+      }
+    }
+
+    return [...grouped.values()]
+      .sort((left, right) => {
+        switch (sortMode) {
+          case "oldest":
+            return left.firstTimestamp.localeCompare(right.firstTimestamp);
+          case "recent":
+            return right.lastTimestamp.localeCompare(left.lastTimestamp);
+          case "severity":
+          default: {
+            const severityDelta =
+              monitorSeverityRank(right.severity) - monitorSeverityRank(left.severity);
+            if (severityDelta !== 0) return severityDelta;
+            return right.lastTimestamp.localeCompare(left.lastTimestamp);
+          }
+        }
+      })
+      .slice(0, 100);
+  }, [query, scopedEvents, severityFilter, sortMode]);
+
+  const severityCounts = useMemo(
+    () => ({
+      critical: visibleGroups.filter((group) => group.severity === "critical").length,
+      warning: visibleGroups.filter((group) => group.severity === "warning").length,
+      info: visibleGroups.filter((group) => group.severity === "info").length,
+    }),
+    [visibleGroups],
+  );
 
   useEffect(() => {
     startAutoRefresh(3000);
@@ -72,17 +231,44 @@ export function ActivityPanel() {
   if (error) {
     return (
       <div className="p-4 text-destructive">
-        <AlertCircle className="inline h-4 w-4 mr-2" />
+        <AlertCircle className="mr-2 inline h-4 w-4" />
         Failed to load events: {error}
       </div>
     );
   }
 
-  const recentEvents = events.slice(-50).reverse();
-
   return (
     <div className="space-y-6">
-      {/* Summary cards */}
+      {focusedSessions.length > 0 && (
+        <Card className="border-primary/20 bg-primary/5">
+          <CardContent className="flex flex-col gap-3 py-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="secondary">Scoped to focused sessions</Badge>
+                <span className="text-sm font-medium">
+                  {focusedSessions.length} session{focusedSessions.length !== 1 ? "s" : ""}
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {focusedSessions.map((session) => (
+                  <button
+                    key={session.session_id}
+                    type="button"
+                    onClick={() => focusSingleSession(session.session_id)}
+                    className="rounded-md border bg-background px-2 py-1 text-xs font-mono transition-colors hover:bg-muted"
+                  >
+                    {formatSessionId(session.session_id)}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <Button variant="ghost" size="sm" onClick={clearFocusedSessions}>
+              Clear focus
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <Card>
           <CardHeader className="pb-2">
@@ -107,11 +293,15 @@ export function ActivityPanel() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              Tool Uses
+              Critical / Warning
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{summary.tool_uses}</div>
+            <div className="text-2xl font-bold">
+              {severityCounts.critical}
+              <span className="mx-1 text-muted-foreground">/</span>
+              <span className="text-yellow-500">{severityCounts.warning}</span>
+            </div>
           </CardContent>
         </Card>
         <Card>
@@ -128,7 +318,6 @@ export function ActivityPanel() {
         </Card>
       </div>
 
-      {/* Top tools */}
       {summary.top_tools.length > 0 && (
         <Card>
           <CardHeader className="pb-2">
@@ -147,53 +336,151 @@ export function ActivityPanel() {
         </Card>
       )}
 
-      {/* Event feed */}
       <Card>
         <CardHeader className="pb-2">
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <Activity className="h-4 w-4" />
-              Recent Events
-              {loading && (
-                <span className="text-xs text-muted-foreground animate-pulse">
-                  updating...
-                </span>
-              )}
-            </CardTitle>
-            <span className="text-xs text-muted-foreground">
-              Showing last {recentEvents.length}
-            </span>
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-sm font-medium">
+                <Activity className="h-4 w-4" />
+                Event Feed
+                {loading && (
+                  <span className="text-xs text-muted-foreground animate-pulse">
+                    updating...
+                  </span>
+                )}
+              </CardTitle>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Showing {visibleGroups.length} grouped rows from {scopedEvents.length} raw events.
+              </p>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_160px_160px]">
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">
+                  Search events
+                </label>
+                <Input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Tool, error, message, session"
+                  className="min-w-[240px]"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">
+                  Severity
+                </label>
+                <Select
+                  value={severityFilter}
+                  onChange={(event) =>
+                    setSeverityFilter(event.target.value as SeverityFilter)
+                  }
+                >
+                  <option value="all">All severities</option>
+                  <option value="critical">Critical</option>
+                  <option value="warning">Warning</option>
+                  <option value="info">Info</option>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">
+                  Sort by
+                </label>
+                <Select
+                  value={sortMode}
+                  onChange={(event) => setSortMode(event.target.value as ActivitySortMode)}
+                >
+                  <option value="severity">Severity</option>
+                  <option value="recent">Newest first</option>
+                  <option value="oldest">Oldest first</option>
+                </Select>
+              </div>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
-          {recentEvents.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-8 text-center">
-              No events recorded yet. Start a Claude Code session with ssenrah
-              hooks installed.
+          <div className="mb-4 flex flex-wrap gap-2">
+            <Badge variant={getSeverityBadgeVariant("critical")}>
+              {severityCounts.critical} critical
+            </Badge>
+            <Badge variant={getSeverityBadgeVariant("warning")}>
+              {severityCounts.warning} warnings
+            </Badge>
+            <Badge variant={getSeverityBadgeVariant("info")}>
+              {severityCounts.info} info
+            </Badge>
+            {(query || severityFilter !== "all") && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setQuery("");
+                  setSeverityFilter("all");
+                  setSortMode("severity");
+                }}
+              >
+                Clear filters
+              </Button>
+            )}
+          </div>
+
+          {visibleGroups.length === 0 ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">
+              No events match the current filters.
             </p>
           ) : (
-            <div className="space-y-1">
-              {recentEvents.map((event) => {
+            <div className="space-y-2">
+              {visibleGroups.map((group) => {
+                const event = group.representative;
                 const Icon = getEventIcon(event.hook_event_type);
                 return (
                   <div
-                    key={event.id}
-                    className="flex items-center gap-3 rounded-md px-2 py-1.5 text-sm hover:bg-muted/50 transition-colors"
+                    key={group.key}
+                    className={cn(
+                      "rounded-md border px-3 py-2 transition-colors hover:bg-muted/40",
+                      group.severity === "critical" && "border-destructive/25 bg-destructive/5",
+                      group.severity === "warning" && "border-yellow-500/25 bg-yellow-500/5",
+                    )}
                   >
-                    <span className="text-xs text-muted-foreground font-mono w-[70px] shrink-0">
-                      {formatTime(event.timestamp)}
-                    </span>
-                    <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <Badge
-                      variant={getEventColor(event.hook_event_type) as "default" | "secondary" | "destructive" | "outline"}
-                      className="text-[10px] px-1.5 py-0 shrink-0"
-                    >
-                      {event.hook_event_type}
-                    </Badge>
-                    <EventDetail event={event} />
-                    <span className="ml-auto text-[10px] text-muted-foreground font-mono shrink-0">
-                      {event.session_id.slice(0, 8)}
-                    </span>
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+                      <div className="flex min-w-0 flex-1 items-start gap-3">
+                        <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                        <div className="min-w-0 space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant={getSeverityBadgeVariant(group.severity)}>
+                              {formatSeverityLabel(group.severity)}
+                            </Badge>
+                            <Badge
+                              variant={getEventColor(event.hook_event_type) as "default" | "secondary" | "destructive" | "outline"}
+                              className="px-1.5 py-0 text-[10px]"
+                            >
+                              {event.hook_event_type}
+                            </Badge>
+                            {group.count > 1 && (
+                              <Badge variant="secondary">×{group.count}</Badge>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => focusSingleSession(event.session_id)}
+                              className="rounded-md border px-2 py-0.5 text-[10px] font-mono text-muted-foreground transition-colors hover:bg-background"
+                            >
+                              {formatSessionId(event.session_id)}
+                            </button>
+                          </div>
+                          <div className="text-sm">
+                            <EventDetail event={event} />
+                          </div>
+                          <p className="text-[10px] text-muted-foreground">
+                            {group.count > 1
+                              ? `Seen ${group.count} times from ${formatTime(group.firstTimestamp)} to ${formatTime(group.lastTimestamp)}`
+                              : `Seen at ${formatTime(group.lastTimestamp)}`}
+                          </p>
+                        </div>
+                      </div>
+                      <span className="shrink-0 text-[10px] text-muted-foreground">
+                        {formatTime(group.lastTimestamp)}
+                      </span>
+                    </div>
                   </div>
                 );
               })}

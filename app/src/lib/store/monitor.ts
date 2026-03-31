@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { createJSONStorage, persist } from "zustand/middleware";
 import { readTextFile, exists } from "@tauri-apps/plugin-fs";
 import { homeDir, join } from "@tauri-apps/api/path";
 import type { AgentEvent, EventSummary, SessionSummary } from "@/types";
@@ -10,10 +11,28 @@ interface MonitorStore {
   lastLoaded: number;
   autoRefresh: boolean;
   refreshInterval: ReturnType<typeof setInterval> | null;
+  focusedSessionIds: string[];
+  showDismissedMonitorItems: boolean;
+  dismissedAlertKeys: Record<string, true>;
+  dismissedAnomalyKeys: Record<string, true>;
 
   loadEvents: () => Promise<void>;
   startAutoRefresh: (intervalMs?: number) => void;
   stopAutoRefresh: () => void;
+  toggleFocusedSession: (sessionId: string) => void;
+  focusSingleSession: (sessionId: string) => void;
+  clearFocusedSessions: () => void;
+  toggleShowDismissedMonitorItems: () => void;
+  dismissAlert: (key: string) => void;
+  dismissAlerts: (keys: string[]) => void;
+  restoreAlert: (key: string) => void;
+  restoreAlerts: (keys: string[]) => void;
+  clearDismissedAlerts: () => void;
+  dismissAnomaly: (key: string) => void;
+  dismissAnomalies: (keys: string[]) => void;
+  restoreAnomaly: (key: string) => void;
+  restoreAnomalies: (keys: string[]) => void;
+  clearDismissedAnomalies: () => void;
 }
 
 async function getEventsPath(): Promise<string> {
@@ -50,22 +69,22 @@ export function computeSummary(events: AgentEvent[]): EventSummary {
     };
   }
 
-  const sessions = new Set(events.map((e) => e.session_id));
-  const toolUses = events.filter((e) => e.hook_event_type === "PostToolUse");
+  const sessions = new Set(events.map((event) => event.session_id));
+  const toolUses = events.filter((event) => event.hook_event_type === "PostToolUse");
   const errors = events.filter(
-    (e) =>
-      e.hook_event_type === "PostToolUseFailure" ||
-      e.hook_event_type === "StopFailure"
+    (event) =>
+      event.hook_event_type === "PostToolUseFailure" ||
+      event.hook_event_type === "StopFailure",
   );
   const subagents = events.filter(
-    (e) => e.hook_event_type === "SubagentStart"
+    (event) => event.hook_event_type === "SubagentStart",
   );
-  const tasks = events.filter((e) => e.hook_event_type === "TaskCompleted");
-  const totalCost = events.reduce((sum, e) => sum + (e.cost_usd ?? 0), 0);
+  const tasks = events.filter((event) => event.hook_event_type === "TaskCompleted");
+  const totalCost = events.reduce((sum, event) => sum + (event.cost_usd ?? 0), 0);
 
   const toolCounts = new Map<string, number>();
-  for (const e of toolUses) {
-    const name = e.tool_name ?? "unknown";
+  for (const event of toolUses) {
+    const name = event.tool_name ?? "unknown";
     toolCounts.set(name, (toolCounts.get(name) ?? 0) + 1);
   }
   const topTools = [...toolCounts.entries()]
@@ -87,7 +106,7 @@ export function computeSummary(events: AgentEvent[]): EventSummary {
 }
 
 export function computeSessions(events: AgentEvent[]): SessionSummary[] {
-  const map = new Map<
+  const groupedSessions = new Map<
     string,
     {
       events: AgentEvent[];
@@ -95,101 +114,190 @@ export function computeSessions(events: AgentEvent[]): SessionSummary[] {
     }
   >();
 
-  for (const e of events) {
-    let s = map.get(e.session_id);
-    if (!s) {
-      s = { events: [], tools: new Map() };
-      map.set(e.session_id, s);
+  for (const event of events) {
+    let grouped = groupedSessions.get(event.session_id);
+    if (!grouped) {
+      grouped = { events: [], tools: new Map() };
+      groupedSessions.set(event.session_id, grouped);
     }
-    s.events.push(e);
-    if (e.hook_event_type === "PostToolUse" && e.tool_name) {
-      s.tools.set(e.tool_name, (s.tools.get(e.tool_name) ?? 0) + 1);
+    grouped.events.push(event);
+    if (event.hook_event_type === "PostToolUse" && event.tool_name) {
+      grouped.tools.set(event.tool_name, (grouped.tools.get(event.tool_name) ?? 0) + 1);
     }
   }
 
   const sessions: SessionSummary[] = [];
-  for (const [session_id, s] of map) {
-    const first = s.events[0]!;
-    const last = s.events[s.events.length - 1]!;
+  for (const [session_id, grouped] of groupedSessions) {
+    const first = grouped.events[0]!;
+    const last = grouped.events[grouped.events.length - 1]!;
     const duration =
-      (new Date(last.timestamp).getTime() -
-        new Date(first.timestamp).getTime()) /
+      (new Date(last.timestamp).getTime() - new Date(first.timestamp).getTime()) /
       1000;
 
     sessions.push({
       session_id,
-      event_count: s.events.length,
+      event_count: grouped.events.length,
       first_event: first.timestamp,
       last_event: last.timestamp,
       duration_seconds: Math.round(duration),
-      tool_uses: s.events.filter((e) => e.hook_event_type === "PostToolUse")
+      tool_uses: grouped.events.filter((event) => event.hook_event_type === "PostToolUse")
         .length,
-      errors: s.events.filter(
-        (e) =>
-          e.hook_event_type === "PostToolUseFailure" ||
-          e.hook_event_type === "StopFailure"
+      errors: grouped.events.filter(
+        (event) =>
+          event.hook_event_type === "PostToolUseFailure" ||
+          event.hook_event_type === "StopFailure",
       ).length,
-      subagents: s.events.filter(
-        (e) => e.hook_event_type === "SubagentStart"
+      subagents: grouped.events.filter(
+        (event) => event.hook_event_type === "SubagentStart",
       ).length,
-      cost_usd: s.events.reduce((sum, e) => sum + (e.cost_usd ?? 0), 0),
-      top_tools: [...s.tools.entries()]
+      cost_usd: grouped.events.reduce((sum, event) => sum + (event.cost_usd ?? 0), 0),
+      top_tools: [...grouped.tools.entries()]
         .sort((a, b) => b[1] - a[1])
         .slice(0, 5),
     });
   }
 
-  // Most recent first
   sessions.sort(
     (a, b) =>
-      new Date(b.first_event).getTime() - new Date(a.first_event).getTime()
+      new Date(b.first_event).getTime() - new Date(a.first_event).getTime(),
   );
 
   return sessions;
 }
 
-export const useMonitorStore = create<MonitorStore>((set, get) => ({
-  events: [],
-  loading: false,
-  error: null,
-  lastLoaded: 0,
-  autoRefresh: false,
-  refreshInterval: null,
+export const useMonitorStore = create<MonitorStore>()(
+  persist(
+    (set, get) => ({
+      events: [],
+      loading: false,
+      error: null,
+      lastLoaded: 0,
+      autoRefresh: false,
+      refreshInterval: null,
+      focusedSessionIds: [],
+      showDismissedMonitorItems: false,
+      dismissedAlertKeys: {},
+      dismissedAnomalyKeys: {},
 
-  loadEvents: async () => {
-    try {
-      set({ loading: true, error: null });
-      const path = await getEventsPath();
-      const fileExists = await exists(path);
-      if (!fileExists) {
-        set({ events: [], loading: false, lastLoaded: Date.now() });
-        return;
-      }
-      const content = await readTextFile(path);
-      const events = parseJsonlEvents(content);
-      set({ events, loading: false, lastLoaded: Date.now() });
-    } catch (err) {
-      set({
-        error: err instanceof Error ? err.message : String(err),
-        loading: false,
-      });
-    }
-  },
+      loadEvents: async () => {
+        try {
+          set({ loading: true, error: null });
+          const path = await getEventsPath();
+          const fileExists = await exists(path);
+          if (!fileExists) {
+            set({ events: [], loading: false, lastLoaded: Date.now() });
+            return;
+          }
+          const content = await readTextFile(path);
+          const events = parseJsonlEvents(content);
+          set({ events, loading: false, lastLoaded: Date.now() });
+        } catch (err) {
+          set({
+            error: err instanceof Error ? err.message : String(err),
+            loading: false,
+          });
+        }
+      },
 
-  startAutoRefresh: (intervalMs = 2000) => {
-    const { refreshInterval } = get();
-    if (refreshInterval) return; // Already running
-    get().loadEvents();
-    const interval = setInterval(() => get().loadEvents(), intervalMs);
-    set({ autoRefresh: true, refreshInterval: interval });
-  },
+      startAutoRefresh: (intervalMs = 2000) => {
+        const { refreshInterval } = get();
+        if (refreshInterval) return;
+        get().loadEvents();
+        const interval = setInterval(() => get().loadEvents(), intervalMs);
+        set({ autoRefresh: true, refreshInterval: interval });
+      },
 
-  stopAutoRefresh: () => {
-    const { refreshInterval } = get();
-    if (refreshInterval) {
-      clearInterval(refreshInterval);
-    }
-    set({ autoRefresh: false, refreshInterval: null });
-  },
+      stopAutoRefresh: () => {
+        const { refreshInterval } = get();
+        if (refreshInterval) {
+          clearInterval(refreshInterval);
+        }
+        set({ autoRefresh: false, refreshInterval: null });
+      },
 
-}));
+      toggleFocusedSession: (sessionId) =>
+        set((state) => ({
+          focusedSessionIds: state.focusedSessionIds.includes(sessionId)
+            ? state.focusedSessionIds.filter((id) => id !== sessionId)
+            : [...state.focusedSessionIds, sessionId],
+        })),
+
+      focusSingleSession: (sessionId) => set({ focusedSessionIds: [sessionId] }),
+      clearFocusedSessions: () => set({ focusedSessionIds: [] }),
+      toggleShowDismissedMonitorItems: () =>
+        set((state) => ({
+          showDismissedMonitorItems: !state.showDismissedMonitorItems,
+        })),
+
+      dismissAlert: (key) =>
+        set((state) => ({
+          dismissedAlertKeys: { ...state.dismissedAlertKeys, [key]: true },
+        })),
+      dismissAlerts: (keys) =>
+        set((state) => ({
+          dismissedAlertKeys: keys.reduce<Record<string, true>>(
+            (next, key) => {
+              next[key] = true;
+              return next;
+            },
+            { ...state.dismissedAlertKeys },
+          ),
+        })),
+      restoreAlert: (key) =>
+        set((state) => {
+          const next = { ...state.dismissedAlertKeys };
+          delete next[key];
+          return { dismissedAlertKeys: next };
+        }),
+      restoreAlerts: (keys) =>
+        set((state) => {
+          const next = { ...state.dismissedAlertKeys };
+          for (const key of keys) {
+            delete next[key];
+          }
+          return { dismissedAlertKeys: next };
+        }),
+      clearDismissedAlerts: () => set({ dismissedAlertKeys: {} }),
+
+      dismissAnomaly: (key) =>
+        set((state) => ({
+          dismissedAnomalyKeys: { ...state.dismissedAnomalyKeys, [key]: true },
+        })),
+      dismissAnomalies: (keys) =>
+        set((state) => ({
+          dismissedAnomalyKeys: keys.reduce<Record<string, true>>(
+            (next, key) => {
+              next[key] = true;
+              return next;
+            },
+            { ...state.dismissedAnomalyKeys },
+          ),
+        })),
+      restoreAnomaly: (key) =>
+        set((state) => {
+          const next = { ...state.dismissedAnomalyKeys };
+          delete next[key];
+          return { dismissedAnomalyKeys: next };
+        }),
+      restoreAnomalies: (keys) =>
+        set((state) => {
+          const next = { ...state.dismissedAnomalyKeys };
+          for (const key of keys) {
+            delete next[key];
+          }
+          return { dismissedAnomalyKeys: next };
+        }),
+      clearDismissedAnomalies: () => set({ dismissedAnomalyKeys: {} }),
+    }),
+    {
+      name: "ssenrah-monitor-ui",
+      storage: createJSONStorage(() => localStorage),
+      partialize: (state) => ({
+        focusedSessionIds: state.focusedSessionIds,
+        showDismissedMonitorItems: state.showDismissedMonitorItems,
+        dismissedAlertKeys: state.dismissedAlertKeys,
+        dismissedAnomalyKeys: state.dismissedAnomalyKeys,
+      }),
+    },
+  ),
+);

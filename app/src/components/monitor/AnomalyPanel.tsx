@@ -1,171 +1,146 @@
-import { useEffect, useMemo } from "react";
-import { useMonitorStore } from "@/lib/store/monitor";
+import { useEffect, useMemo, useState } from "react";
+import { useMonitorStore, computeSessions } from "@/lib/store/monitor";
+import {
+  detectAnomalies,
+  formatSeverityLabel,
+  getAnomalyKey,
+  getSeverityBadgeVariant,
+  type AnomalyType,
+} from "@/lib/monitor-utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { Radar, AlertCircle, RefreshCw, Repeat, Zap, DollarSign, ArrowRightLeft } from "lucide-react";
-import type { AgentEvent } from "@/types";
 
-type AnomalyType = "infinite_loop" | "tool_thrashing" | "error_cascade" | "cost_spike";
-type AnomalySeverity = "warning" | "critical";
-
-interface Anomaly {
-  type: AnomalyType;
-  severity: AnomalySeverity;
-  session_id: string;
-  timestamp: string;
-  message: string;
-  evidence: {
-    events: string[];
-    pattern?: string;
-    count?: number;
-    window_seconds?: number;
-  };
-}
-
-const LOOP_THRESHOLD = 5;
-const THRASH_TOOL_COUNT = 8;
-const THRASH_WINDOW_MS = 30000;
-const ERROR_CASCADE_COUNT = 5;
-const ERROR_CASCADE_WINDOW_MS = 60000;
-const COST_SPIKE_USD = 2.0;
-
-function detectAnomalies(events: AgentEvent[]): Anomaly[] {
-  const anomalies: Anomaly[] = [];
-
-  const sessions = new Map<string, AgentEvent[]>();
-  for (const e of events) {
-    const list = sessions.get(e.session_id);
-    if (list) list.push(e);
-    else sessions.set(e.session_id, [e]);
-  }
-
-  for (const [sessionId, sessionEvents] of sessions) {
-    // Infinite loops
-    const toolEvents = sessionEvents.filter((e) => e.hook_event_type === "PostToolUse" && e.tool_name);
-    const sigCounts = new Map<string, number>();
-    for (const e of toolEvents) {
-      const sig = `${e.tool_name}::${JSON.stringify(e.tool_input ?? {})}`;
-      sigCounts.set(sig, (sigCounts.get(sig) ?? 0) + 1);
-    }
-    for (const [sig, count] of sigCounts) {
-      if (count >= LOOP_THRESHOLD) {
-        anomalies.push({
-          type: "infinite_loop",
-          severity: count >= LOOP_THRESHOLD * 2 ? "critical" : "warning",
-          session_id: sessionId,
-          timestamp: toolEvents[toolEvents.length - 1]?.timestamp ?? "",
-          message: `"${sig.split("::")[0]}" called ${count}× with identical input`,
-          evidence: { events: [], pattern: sig.slice(0, 200), count },
-        });
-      }
-    }
-
-    // Error cascades
-    const errors = sessionEvents.filter(
-      (e) => e.hook_event_type === "PostToolUseFailure" || e.hook_event_type === "StopFailure"
-    );
-    for (let i = 0; i < errors.length; i++) {
-      const start = new Date(errors[i]!.timestamp).getTime();
-      let windowCount = 0;
-      for (let j = i; j < errors.length; j++) {
-        if (new Date(errors[j]!.timestamp).getTime() - start > ERROR_CASCADE_WINDOW_MS) break;
-        windowCount++;
-      }
-      if (windowCount >= ERROR_CASCADE_COUNT) {
-        anomalies.push({
-          type: "error_cascade",
-          severity: windowCount >= ERROR_CASCADE_COUNT * 2 ? "critical" : "warning",
-          session_id: sessionId,
-          timestamp: errors[i]!.timestamp,
-          message: `${windowCount} errors in ${ERROR_CASCADE_WINDOW_MS / 1000}s`,
-          evidence: { events: [], count: windowCount, window_seconds: ERROR_CASCADE_WINDOW_MS / 1000 },
-        });
-        break;
-      }
-    }
-
-    // Tool thrashing
-    const toolAndErrors = sessionEvents.filter(
-      (e) => e.hook_event_type === "PostToolUse" || e.hook_event_type === "PostToolUseFailure"
-    );
-    for (let i = 0; i < toolAndErrors.length; i++) {
-      const start = new Date(toolAndErrors[i]!.timestamp).getTime();
-      const window = [];
-      const distinctTools = new Set<string>();
-      for (let j = i; j < toolAndErrors.length; j++) {
-        if (new Date(toolAndErrors[j]!.timestamp).getTime() - start > THRASH_WINDOW_MS) break;
-        window.push(toolAndErrors[j]!);
-        if (toolAndErrors[j]!.tool_name) distinctTools.add(toolAndErrors[j]!.tool_name!);
-      }
-      if (distinctTools.size >= THRASH_TOOL_COUNT) {
-        const failures = window.filter((e) => e.hook_event_type === "PostToolUseFailure").length;
-        if (failures / window.length > 0.3) {
-          anomalies.push({
-            type: "tool_thrashing",
-            severity: failures / window.length > 0.5 ? "critical" : "warning",
-            session_id: sessionId,
-            timestamp: window[window.length - 1]?.timestamp ?? "",
-            message: `${distinctTools.size} tools in ${THRASH_WINDOW_MS / 1000}s, ${Math.round((failures / window.length) * 100)}% failures`,
-            evidence: { events: [], pattern: [...distinctTools].join(", "), count: window.length },
-          });
-          break;
-        }
-      }
-    }
-
-    // Cost spikes
-    const totalCost = sessionEvents.reduce((sum, e) => sum + (e.cost_usd ?? 0), 0);
-    if (totalCost > COST_SPIKE_USD) {
-      anomalies.push({
-        type: "cost_spike",
-        severity: totalCost > COST_SPIKE_USD * 3 ? "critical" : "warning",
-        session_id: sessionId,
-        timestamp: sessionEvents[sessionEvents.length - 1]?.timestamp ?? "",
-        message: `Session cost $${totalCost.toFixed(2)} exceeds $${COST_SPIKE_USD.toFixed(2)}`,
-        evidence: { events: [], count: 1 },
-      });
-    }
-  }
-
-  anomalies.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-  return anomalies;
-}
+type SeverityFilter = "all" | "warning" | "critical";
+type AnomalySortMode = "severity" | "recent" | "oldest";
 
 function anomalyIcon(type: AnomalyType) {
   switch (type) {
-    case "infinite_loop": return Repeat;
-    case "tool_thrashing": return ArrowRightLeft;
-    case "error_cascade": return Zap;
-    case "cost_spike": return DollarSign;
+    case "infinite_loop":
+      return Repeat;
+    case "tool_thrashing":
+      return ArrowRightLeft;
+    case "error_cascade":
+      return Zap;
+    case "cost_spike":
+      return DollarSign;
   }
 }
 
 function anomalyLabel(type: AnomalyType): string {
   switch (type) {
-    case "infinite_loop": return "Infinite Loop";
-    case "tool_thrashing": return "Tool Thrashing";
-    case "error_cascade": return "Error Cascade";
-    case "cost_spike": return "Cost Spike";
+    case "infinite_loop":
+      return "Infinite Loop";
+    case "tool_thrashing":
+      return "Tool Thrashing";
+    case "error_cascade":
+      return "Error Cascade";
+    case "cost_spike":
+      return "Cost Spike";
   }
 }
 
 function formatTime(iso: string): string {
   if (!iso) return "";
-  const d = new Date(iso);
-  return d.toLocaleString("en-US", {
-    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  const date = new Date(iso);
+  return date.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
   });
 }
 
-export function AnomalyPanel() {
-  const events = useMonitorStore((s) => s.events);
-  const loading = useMonitorStore((s) => s.loading);
-  const error = useMonitorStore((s) => s.error);
-  const startAutoRefresh = useMonitorStore((s) => s.startAutoRefresh);
-  const stopAutoRefresh = useMonitorStore((s) => s.stopAutoRefresh);
+function formatSessionId(sessionId: string): string {
+  return `${sessionId.slice(0, 8)}…${sessionId.slice(-4)}`;
+}
 
+export function AnomalyPanel() {
+  const events = useMonitorStore((state) => state.events);
+  const loading = useMonitorStore((state) => state.loading);
+  const error = useMonitorStore((state) => state.error);
+  const startAutoRefresh = useMonitorStore((state) => state.startAutoRefresh);
+  const stopAutoRefresh = useMonitorStore((state) => state.stopAutoRefresh);
+  const focusedSessionIds = useMonitorStore((state) => state.focusedSessionIds);
+  const focusSingleSession = useMonitorStore((state) => state.focusSingleSession);
+  const clearFocusedSessions = useMonitorStore((state) => state.clearFocusedSessions);
+  const showDismissedMonitorItems = useMonitorStore(
+    (state) => state.showDismissedMonitorItems,
+  );
+  const toggleShowDismissedMonitorItems = useMonitorStore(
+    (state) => state.toggleShowDismissedMonitorItems,
+  );
+  const dismissedAnomalyKeys = useMonitorStore((state) => state.dismissedAnomalyKeys);
+  const dismissAnomaly = useMonitorStore((state) => state.dismissAnomaly);
+  const dismissAnomalies = useMonitorStore((state) => state.dismissAnomalies);
+  const restoreAnomaly = useMonitorStore((state) => state.restoreAnomaly);
+  const restoreAnomalies = useMonitorStore((state) => state.restoreAnomalies);
+  const clearDismissedAnomalies = useMonitorStore(
+    (state) => state.clearDismissedAnomalies,
+  );
+
+  const [query, setQuery] = useState("");
+  const [severityFilter, setSeverityFilter] = useState<SeverityFilter>("all");
+  const [sortMode, setSortMode] = useState<AnomalySortMode>("severity");
+
+  const sessions = useMemo(() => computeSessions(events), [events]);
+  const focusedSessions = useMemo(
+    () => sessions.filter((session) => focusedSessionIds.includes(session.session_id)),
+    [focusedSessionIds, sessions],
+  );
   const anomalies = useMemo(() => detectAnomalies(events), [events]);
+
+  const visibleAnomalies = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    const scoped =
+      focusedSessionIds.length > 0
+        ? anomalies.filter((anomaly) => focusedSessionIds.includes(anomaly.session_id))
+        : anomalies;
+
+    const filtered = scoped.filter((anomaly) => {
+      if (severityFilter !== "all" && anomaly.severity !== severityFilter) return false;
+      if (!normalizedQuery) return true;
+      return [anomaly.message, anomaly.type, anomaly.session_id, anomaly.evidence.pattern]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedQuery);
+    });
+
+    return [...filtered].sort((left, right) => {
+      switch (sortMode) {
+        case "oldest":
+          return left.timestamp.localeCompare(right.timestamp);
+        case "recent":
+          return right.timestamp.localeCompare(left.timestamp);
+        case "severity":
+        default:
+          if (left.severity !== right.severity) {
+            return left.severity === "critical" ? -1 : 1;
+          }
+          return right.timestamp.localeCompare(left.timestamp);
+      }
+    });
+  }, [anomalies, focusedSessionIds, query, severityFilter, sortMode]);
+
+  const hiddenAnomalies = visibleAnomalies.filter(
+    (anomaly) => dismissedAnomalyKeys[getAnomalyKey(anomaly)],
+  ).length;
+  const visibleAnomalyKeys = visibleAnomalies.map((anomaly) => getAnomalyKey(anomaly));
+  const activeVisibleAnomalyKeys = visibleAnomalies
+    .filter((anomaly) => !dismissedAnomalyKeys[getAnomalyKey(anomaly)])
+    .map((anomaly) => getAnomalyKey(anomaly));
+  const renderedAnomalies = showDismissedMonitorItems
+    ? visibleAnomalies
+    : visibleAnomalies.filter(
+        (anomaly) => !dismissedAnomalyKeys[getAnomalyKey(anomaly)],
+      );
 
   useEffect(() => {
     startAutoRefresh(5000);
@@ -175,26 +150,55 @@ export function AnomalyPanel() {
   if (error) {
     return (
       <div className="p-4 text-destructive">
-        <AlertCircle className="inline h-4 w-4 mr-2" />
+        <AlertCircle className="mr-2 inline h-4 w-4" />
         Failed to load data: {error}
       </div>
     );
   }
 
-  const critical = anomalies.filter((a) => a.severity === "critical").length;
-  const warning = anomalies.filter((a) => a.severity === "warning").length;
+  const critical = renderedAnomalies.filter((anomaly) => anomaly.severity === "critical").length;
+  const warning = renderedAnomalies.filter((anomaly) => anomaly.severity === "warning").length;
 
   return (
     <div className="space-y-6">
-      {/* Summary */}
+      {focusedSessions.length > 0 && (
+        <Card className="border-primary/20 bg-primary/5">
+          <CardContent className="flex flex-col gap-3 py-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="secondary">Scoped to focused sessions</Badge>
+                <span className="text-sm font-medium">
+                  {focusedSessions.length} session{focusedSessions.length !== 1 ? "s" : ""}
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {focusedSessions.map((session) => (
+                  <button
+                    key={session.session_id}
+                    type="button"
+                    onClick={() => focusSingleSession(session.session_id)}
+                    className="rounded-md border bg-background px-2 py-1 text-xs font-mono transition-colors hover:bg-muted"
+                  >
+                    {formatSessionId(session.session_id)}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <Button variant="ghost" size="sm" onClick={clearFocusedSessions}>
+              Clear focus
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid grid-cols-3 gap-4">
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">Total Anomalies</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className={cn("text-2xl font-bold", anomalies.length > 0 && "text-destructive")}>
-              {anomalies.length}
+            <div className={cn("text-2xl font-bold", renderedAnomalies.length > 0 && "text-destructive")}>
+              {renderedAnomalies.length}
             </div>
           </CardContent>
         </Card>
@@ -220,70 +224,180 @@ export function AnomalyPanel() {
         </Card>
       </div>
 
-      {/* Anomaly list */}
       <Card>
         <CardHeader className="pb-2">
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <Radar className="h-4 w-4" />
-              Detected Anomalies
-              {loading && <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />}
-            </CardTitle>
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-sm font-medium">
+                <Radar className="h-4 w-4" />
+                Detected Anomalies
+                {loading && <RefreshCw className="h-3 w-3 animate-spin text-muted-foreground" />}
+              </CardTitle>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {renderedAnomalies.length} visible anomalies
+                {hiddenAnomalies > 0 && !showDismissedMonitorItems
+                  ? ` · ${hiddenAnomalies} dismissed`
+                  : ""}
+              </p>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_160px_160px]">
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">
+                  Search anomalies
+                </label>
+                <Input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Session, message, pattern"
+                  className="min-w-[240px]"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">
+                  Severity
+                </label>
+                <Select
+                  value={severityFilter}
+                  onChange={(event) =>
+                    setSeverityFilter(event.target.value as SeverityFilter)
+                  }
+                >
+                  <option value="all">All severities</option>
+                  <option value="critical">Critical</option>
+                  <option value="warning">Warning</option>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">
+                  Sort by
+                </label>
+                <Select
+                  value={sortMode}
+                  onChange={(event) => setSortMode(event.target.value as AnomalySortMode)}
+                >
+                  <option value="severity">Severity</option>
+                  <option value="recent">Newest first</option>
+                  <option value="oldest">Oldest first</option>
+                </Select>
+              </div>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
-          {anomalies.length === 0 ? (
-            <div className="text-center py-8">
-              <Radar className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
+          <div className="mb-4 flex flex-wrap gap-2">
+            <Button variant="ghost" size="sm" onClick={toggleShowDismissedMonitorItems}>
+              {showDismissedMonitorItems ? "Hide dismissed" : "Show dismissed"}
+            </Button>
+            {activeVisibleAnomalyKeys.length > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => dismissAnomalies(activeVisibleAnomalyKeys)}
+              >
+                Mark visible false alarms
+              </Button>
+            )}
+            {visibleAnomalyKeys.length > 0 && hiddenAnomalies > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => restoreAnomalies(visibleAnomalyKeys)}
+              >
+                Restore visible
+              </Button>
+            )}
+            {Object.keys(dismissedAnomalyKeys).length > 0 && (
+              <Button variant="ghost" size="sm" onClick={clearDismissedAnomalies}>
+                Reset dismissed
+              </Button>
+            )}
+            {(query || severityFilter !== "all") && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setQuery("");
+                  setSeverityFilter("all");
+                  setSortMode("severity");
+                }}
+              >
+                Clear filters
+              </Button>
+            )}
+          </div>
+
+          {renderedAnomalies.length === 0 ? (
+            <div className="py-8 text-center">
+              <Radar className="mx-auto mb-2 h-8 w-8 text-muted-foreground" />
               <p className="text-sm text-muted-foreground">
-                No anomalies detected. Agent behavior is within normal patterns.
+                {visibleAnomalies.length === 0
+                  ? "No anomalies detected for the current filters."
+                  : "All matching anomalies are dismissed."}
               </p>
             </div>
           ) : (
             <div className="space-y-3">
-              {anomalies.map((anomaly, i) => {
+              {renderedAnomalies.map((anomaly) => {
                 const Icon = anomalyIcon(anomaly.type);
+                const anomalyKey = getAnomalyKey(anomaly);
+                const dismissed = Boolean(dismissedAnomalyKeys[anomalyKey]);
                 return (
                   <div
-                    key={i}
+                    key={anomalyKey}
                     className={cn(
-                      "flex items-start gap-3 rounded-md border px-3 py-2",
+                      "rounded-md border px-3 py-3",
                       anomaly.severity === "critical"
                         ? "border-destructive/30 bg-destructive/5"
-                        : "border-yellow-500/30 bg-yellow-500/5"
+                        : "border-yellow-500/30 bg-yellow-500/5",
                     )}
                   >
-                    <Icon
-                      className={cn(
-                        "h-4 w-4 shrink-0 mt-0.5",
-                        anomaly.severity === "critical" ? "text-destructive" : "text-yellow-500"
-                      )}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <Badge
-                          variant={anomaly.severity === "critical" ? "destructive" : "outline"}
-                          className="text-[10px] px-1.5 py-0"
-                        >
-                          {anomaly.severity}
-                        </Badge>
-                        <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                          {anomalyLabel(anomaly.type)}
-                        </Badge>
-                        <span className="text-[10px] text-muted-foreground font-mono">
-                          {anomaly.session_id.slice(0, 8)}
-                        </span>
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                      <div className="flex min-w-0 flex-1 items-start gap-3">
+                        <Icon
+                          className={cn(
+                            "mt-0.5 h-4 w-4 shrink-0",
+                            anomaly.severity === "critical" ? "text-destructive" : "text-yellow-500",
+                          )}
+                        />
+                        <div className="min-w-0 space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant={getSeverityBadgeVariant(anomaly.severity)}>
+                              {formatSeverityLabel(anomaly.severity)}
+                            </Badge>
+                            <Badge variant="secondary">{anomalyLabel(anomaly.type)}</Badge>
+                            <button
+                              type="button"
+                              onClick={() => focusSingleSession(anomaly.session_id)}
+                              className="rounded-md border bg-background px-2 py-0.5 text-[10px] font-mono text-muted-foreground transition-colors hover:bg-muted"
+                            >
+                              {formatSessionId(anomaly.session_id)}
+                            </button>
+                          </div>
+                          <p className="text-sm">{anomaly.message}</p>
+                          {anomaly.evidence.pattern && (
+                            <p className="truncate text-[10px] text-muted-foreground">
+                              {anomaly.evidence.pattern}
+                            </p>
+                          )}
+                        </div>
                       </div>
-                      <p className="text-sm">{anomaly.message}</p>
-                      {anomaly.evidence.pattern && (
-                        <p className="text-[10px] text-muted-foreground mt-1 truncate">
-                          {anomaly.evidence.pattern}
-                        </p>
-                      )}
+
+                      <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+                        <span className="text-[10px] text-muted-foreground">
+                          {formatTime(anomaly.timestamp)}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() =>
+                            dismissed ? restoreAnomaly(anomalyKey) : dismissAnomaly(anomalyKey)
+                          }
+                        >
+                          {dismissed ? "Undo" : "Mark false alarm"}
+                        </Button>
+                      </div>
                     </div>
-                    <span className="text-[10px] text-muted-foreground shrink-0">
-                      {formatTime(anomaly.timestamp)}
-                    </span>
                   </div>
                 );
               })}
