@@ -56,6 +56,34 @@ export interface TaskSummary {
   status: "created" | "completed";
 }
 
+export type FlowStatus = "active" | "completed" | "failed";
+
+export interface FlowGroup {
+  key: string;
+  task_id?: string;
+  label: string;
+  status: FlowStatus;
+  first_timestamp: string;
+  last_timestamp: string;
+  step_count: number;
+  tool_count: number;
+  failures: number;
+  records: TelemetryRecord[];
+}
+
+export interface ActorFlow {
+  actor_id: string;
+  actor_label: string;
+  actor_kind: TelemetryActorKind;
+  status: FlowStatus;
+  first_timestamp: string;
+  last_timestamp: string;
+  step_count: number;
+  tool_count: number;
+  failures: number;
+  groups: FlowGroup[];
+}
+
 export interface ToolDecision {
   tool_name: string;
   tool_input: Record<string, unknown>;
@@ -687,6 +715,121 @@ export function summarizeTasks(
     const rightTs = right.completed_at ?? right.created_at ?? "";
     return rightTs.localeCompare(leftTs);
   });
+}
+
+function deriveFlowStatus(records: TelemetryRecord[]): FlowStatus {
+  if (records.some((record) => record.severity === "error")) return "failed";
+
+  const lastRecord = records[records.length - 1];
+  if (!lastRecord) return "active";
+
+  if (records.some((record) => record.operation === "task.complete")) return "completed";
+  if (lastRecord.phase === "end" || lastRecord.phase === "success") return "completed";
+  return "active";
+}
+
+function normalizeTaskLabel(record: TelemetryRecord): string | undefined {
+  if (!record.task_id) return undefined;
+
+  if (record.summary.startsWith("Task created: ")) {
+    return record.summary.slice("Task created: ".length);
+  }
+  if (record.summary.startsWith("Task completed: ")) {
+    return record.summary.slice("Task completed: ".length);
+  }
+  return record.task_id;
+}
+
+export function deriveActorFlows(records: TelemetryRecord[]): ActorFlow[] {
+  const actors = new Map<string, ActorFlow>();
+
+  for (const record of records) {
+    const actorKey = record.actor_id;
+    const existingActor = actors.get(actorKey);
+
+    if (!existingActor) {
+      actors.set(actorKey, {
+        actor_id: record.actor_id,
+        actor_label: record.actor_label,
+        actor_kind: record.actor_kind,
+        status: record.severity === "error" ? "failed" : "active",
+        first_timestamp: record.timestamp,
+        last_timestamp: record.timestamp,
+        step_count: 1,
+        tool_count: record.operation.startsWith("tool.") ? 1 : 0,
+        failures: record.severity === "error" ? 1 : 0,
+        groups: [],
+      });
+    } else {
+      existingActor.step_count += 1;
+      if (record.operation.startsWith("tool.")) existingActor.tool_count += 1;
+      if (record.severity === "error") existingActor.failures += 1;
+      if (record.timestamp < existingActor.first_timestamp) {
+        existingActor.first_timestamp = record.timestamp;
+      }
+      if (record.timestamp > existingActor.last_timestamp) {
+        existingActor.last_timestamp = record.timestamp;
+      }
+    }
+
+    const actor = actors.get(actorKey)!;
+    const groupKey = record.task_id ?? `unscoped:${record.actor_id}`;
+    let group = actor.groups.find((item) => item.key === groupKey);
+    if (!group) {
+      group = {
+        key: groupKey,
+        task_id: record.task_id,
+        label: normalizeTaskLabel(record) ?? "Session / unscoped flow",
+        status: record.severity === "error" ? "failed" : "active",
+        first_timestamp: record.timestamp,
+        last_timestamp: record.timestamp,
+        step_count: 0,
+        tool_count: 0,
+        failures: 0,
+        records: [],
+      };
+      actor.groups.push(group);
+    }
+
+    group.records.push(record);
+    group.step_count += 1;
+    if (record.operation.startsWith("tool.")) group.tool_count += 1;
+    if (record.severity === "error") group.failures += 1;
+    if (record.timestamp < group.first_timestamp) group.first_timestamp = record.timestamp;
+    if (record.timestamp > group.last_timestamp) group.last_timestamp = record.timestamp;
+
+    const nextLabel = normalizeTaskLabel(record);
+    if (nextLabel && group.label === "Session / unscoped flow") {
+      group.label = nextLabel;
+    }
+  }
+
+  return [...actors.values()]
+    .map((actor): ActorFlow => {
+      const groups: FlowGroup[] = actor.groups
+        .map((group) => {
+          const sortedRecords = [...group.records].sort((left, right) =>
+            left.timestamp.localeCompare(right.timestamp),
+          );
+          return {
+            ...group,
+            records: sortedRecords,
+            status: deriveFlowStatus(sortedRecords),
+          };
+        })
+        .sort((left, right) => left.first_timestamp.localeCompare(right.first_timestamp));
+
+      return {
+        ...actor,
+        groups,
+        status: groups.some((group) => group.status === "failed")
+          ? "failed"
+          : groups.every((group) => group.status === "completed")
+            ? "completed"
+            : "active",
+      };
+    })
+    .sort((left, right) => left.first_timestamp.localeCompare(right.first_timestamp));
 }
 
 export function getScopedEvents(events: AgentEvent[], focusedSessionIds: string[]): AgentEvent[] {

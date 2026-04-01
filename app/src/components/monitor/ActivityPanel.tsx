@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMonitorStore, computeSummary, computeSessions } from "@/lib/store/monitor";
+import { useMonitorStore, computeSessions } from "@/lib/store/monitor";
 import {
+  deriveActorFlows,
   deriveTelemetryTimeline,
+  getPrimarySessionId,
   getScopedEvents,
-  summarizeAgents,
   summarizeTasks,
+  type ActorFlow,
+  type FlowStatus,
   type TelemetryRecord,
   type TelemetrySeverity,
 } from "@/lib/telemetry";
@@ -28,6 +31,7 @@ import {
 
 type SeverityFilter = "all" | TelemetrySeverity;
 type ActivitySortMode = "severity" | "recent" | "oldest";
+type ActivityViewMode = "flow" | "timeline";
 
 function telemetrySeverityRank(severity: TelemetrySeverity): number {
   switch (severity) {
@@ -41,7 +45,9 @@ function telemetrySeverityRank(severity: TelemetrySeverity): number {
   }
 }
 
-function getSeverityBadgeVariant(severity: TelemetrySeverity): "secondary" | "outline" | "destructive" {
+function getSeverityBadgeVariant(
+  severity: TelemetrySeverity,
+): "secondary" | "outline" | "destructive" {
   switch (severity) {
     case "error":
       return "destructive";
@@ -62,6 +68,32 @@ function formatSeverityLabel(severity: TelemetrySeverity): string {
     case "info":
     default:
       return "Info";
+  }
+}
+
+function getFlowStatusVariant(
+  status: FlowStatus,
+): "secondary" | "outline" | "destructive" {
+  switch (status) {
+    case "failed":
+      return "destructive";
+    case "completed":
+      return "secondary";
+    case "active":
+    default:
+      return "outline";
+  }
+}
+
+function formatFlowStatus(status: FlowStatus): string {
+  switch (status) {
+    case "failed":
+      return "Failed";
+    case "completed":
+      return "Completed";
+    case "active":
+    default:
+      return "Active";
   }
 }
 
@@ -121,6 +153,118 @@ function matchesQuery(record: TelemetryRecord, query: string): boolean {
     .includes(query);
 }
 
+function StepRow({ record }: { record: TelemetryRecord }) {
+  const Icon = getTelemetryIcon(record);
+
+  return (
+    <div
+      className={cn(
+        "rounded-md border px-3 py-2",
+        record.severity === "error" && "border-destructive/20 bg-destructive/5",
+        record.severity === "warning" && "border-yellow-500/20 bg-yellow-500/5",
+      )}
+    >
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+          <div className="min-w-0 space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant={getSeverityBadgeVariant(record.severity)}>
+                {formatSeverityLabel(record.severity)}
+              </Badge>
+              <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+                {record.operation}
+              </Badge>
+              {record.tool_name && (
+                <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
+                  {record.tool_name}
+                </Badge>
+              )}
+              {record.model && (
+                <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+                  {truncate(record.model, 24)}
+                </Badge>
+              )}
+            </div>
+            <p className="text-sm font-medium">{record.summary}</p>
+            {record.detail && <p className="text-xs text-muted-foreground">{record.detail}</p>}
+            <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
+              <span>{record.hook_event_type}</span>
+              {record.resource && <span>{truncate(record.resource, 80)}</span>}
+              {record.task_id && <span>task {truncate(record.task_id, 18)}</span>}
+            </div>
+          </div>
+        </div>
+        <span className="shrink-0 text-[10px] text-muted-foreground">{formatTime(record.timestamp)}</span>
+      </div>
+    </div>
+  );
+}
+
+function FlowActorCard({ actor }: { actor: ActorFlow }) {
+  return (
+    <Card
+      className={cn(
+        actor.status === "failed" && "border-destructive/25",
+        actor.status === "active" && "border-primary/20",
+      )}
+    >
+      <CardHeader className="pb-3">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="secondary">{actor.actor_label}</Badge>
+              <Badge variant="outline" className="capitalize">
+                {actor.actor_kind}
+              </Badge>
+              <Badge variant={getFlowStatusVariant(actor.status)}>
+                {formatFlowStatus(actor.status)}
+              </Badge>
+              {actor.failures > 0 && (
+                <Badge variant="destructive">{actor.failures} failure{actor.failures !== 1 ? "s" : ""}</Badge>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {actor.step_count} step{actor.step_count !== 1 ? "s" : ""} · {actor.tool_count} tool event
+              {actor.tool_count !== 1 ? "s" : ""} · {formatTime(actor.first_timestamp)} → {formatTime(actor.last_timestamp)}
+            </p>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {actor.groups.map((group) => (
+          <div key={group.key} className="rounded-md border bg-background/70 px-3 py-3">
+            <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+              <div className="space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant={getFlowStatusVariant(group.status)}>{formatFlowStatus(group.status)}</Badge>
+                  <Badge variant="outline">{group.task_id ? "Task flow" : "Session flow"}</Badge>
+                  <span className="text-sm font-medium">{group.label}</span>
+                  {group.task_id && (
+                    <span className="font-mono text-[10px] text-muted-foreground">
+                      {truncate(group.task_id, 18)}
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {group.step_count} step{group.step_count !== 1 ? "s" : ""} · {group.tool_count} tool event
+                  {group.tool_count !== 1 ? "s" : ""} · {formatTime(group.first_timestamp)} → {formatTime(group.last_timestamp)}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-3 space-y-2 border-l pl-3">
+              {group.records.map((record) => (
+                <StepRow key={record.event_id} record={record} />
+              ))}
+            </div>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function ActivityPanel() {
   const events = useMonitorStore((state) => state.events);
   const loading = useMonitorStore((state) => state.loading);
@@ -134,24 +278,43 @@ export function ActivityPanel() {
   const [query, setQuery] = useState("");
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>("all");
   const [sortMode, setSortMode] = useState<ActivitySortMode>("severity");
+  const [viewMode, setViewMode] = useState<ActivityViewMode>("flow");
 
   const sessions = useMemo(() => computeSessions(events), [events]);
   const focusedSessions = useMemo(
     () => sessions.filter((session) => focusedSessionIds.includes(session.session_id)),
     [focusedSessionIds, sessions],
   );
-  const scopedEvents = useMemo(
-    () => getScopedEvents(events, focusedSessionIds),
-    [events, focusedSessionIds],
+  const scopedEvents = useMemo(() => getScopedEvents(events, focusedSessionIds), [events, focusedSessionIds]);
+  const primarySessionId = useMemo(
+    () => getPrimarySessionId(scopedEvents, focusedSessionIds),
+    [scopedEvents, focusedSessionIds],
   );
-  const summary = useMemo(() => computeSummary(scopedEvents), [scopedEvents]);
-  const timeline = useMemo(() => deriveTelemetryTimeline(scopedEvents), [scopedEvents]);
-  const agentSummaries = useMemo(() => summarizeAgents(scopedEvents), [scopedEvents]);
-  const taskSummaries = useMemo(() => summarizeTasks(scopedEvents), [scopedEvents]);
 
-  const visibleRecords = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-    const filteredRecords = timeline.filter((record) => {
+  const allScopedRecords = useMemo(() => deriveTelemetryTimeline(scopedEvents), [scopedEvents]);
+  const sessionRecords = useMemo(
+    () => (primarySessionId ? deriveTelemetryTimeline(scopedEvents, { session: primarySessionId }) : []),
+    [primarySessionId, scopedEvents],
+  );
+  const sessionTaskCount = useMemo(
+    () => (primarySessionId ? summarizeTasks(scopedEvents, { session: primarySessionId }).length : 0),
+    [primarySessionId, scopedEvents],
+  );
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredSessionRecords = useMemo(
+    () =>
+      sessionRecords.filter((record) => {
+        if (severityFilter !== "all" && record.severity !== severityFilter) return false;
+        return matchesQuery(record, normalizedQuery);
+      }),
+    [normalizedQuery, sessionRecords, severityFilter],
+  );
+
+  const flowActors = useMemo(() => deriveActorFlows(filteredSessionRecords), [filteredSessionRecords]);
+
+  const visibleTimelineRecords = useMemo(() => {
+    const filteredRecords = allScopedRecords.filter((record) => {
       if (severityFilter !== "all" && record.severity !== severityFilter) return false;
       return matchesQuery(record, normalizedQuery);
     });
@@ -165,24 +328,23 @@ export function ActivityPanel() {
             return right.timestamp.localeCompare(left.timestamp);
           case "severity":
           default: {
-            const severityDelta =
-              telemetrySeverityRank(right.severity) - telemetrySeverityRank(left.severity);
+            const severityDelta = telemetrySeverityRank(right.severity) - telemetrySeverityRank(left.severity);
             if (severityDelta !== 0) return severityDelta;
             return right.timestamp.localeCompare(left.timestamp);
           }
         }
       })
       .slice(0, 150);
-  }, [query, severityFilter, sortMode, timeline]);
+  }, [allScopedRecords, normalizedQuery, severityFilter, sortMode]);
 
-  const severityCounts = useMemo(
-    () => ({
-      error: visibleRecords.filter((record) => record.severity === "error").length,
-      warning: visibleRecords.filter((record) => record.severity === "warning").length,
-      info: visibleRecords.filter((record) => record.severity === "info").length,
-    }),
-    [visibleRecords],
-  );
+  const visibleRecordCounts = useMemo(() => {
+    const activeRecords = viewMode === "flow" ? filteredSessionRecords : visibleTimelineRecords;
+    return {
+      error: activeRecords.filter((record) => record.severity === "error").length,
+      warning: activeRecords.filter((record) => record.severity === "warning").length,
+      info: activeRecords.filter((record) => record.severity === "info").length,
+    };
+  }, [filteredSessionRecords, viewMode, visibleTimelineRecords]);
 
   useEffect(() => {
     startAutoRefresh(3000);
@@ -234,74 +396,54 @@ export function ActivityPanel() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              Timeline Rows
+              {viewMode === "flow" ? "Flow Steps" : "Timeline Rows"}
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{timeline.length}</div>
+            <div className="text-2xl font-bold">
+              {viewMode === "flow" ? filteredSessionRecords.length : visibleTimelineRecords.length}
+            </div>
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Sessions
-            </CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Sessions</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{summary.session_count}</div>
+            <div className="text-2xl font-bold">{focusedSessionIds.length || sessions.length}</div>
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Actors
-            </CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Actors</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{agentSummaries.length}</div>
+            <div className="text-2xl font-bold">
+              {viewMode === "flow" ? flowActors.length : deriveActorFlows(visibleTimelineRecords).length}
+            </div>
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Tasks
-            </CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Tasks</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{taskSummaries.length}</div>
+            <div className="text-2xl font-bold">
+              {viewMode === "flow" ? sessionTaskCount : summarizeTasks(scopedEvents).length}
+            </div>
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Errors
-            </CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Errors</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className={cn("text-2xl font-bold", summary.errors > 0 && "text-destructive")}>
-              {summary.errors}
+            <div className={cn("text-2xl font-bold", visibleRecordCounts.error > 0 && "text-destructive")}>
+              {visibleRecordCounts.error}
             </div>
           </CardContent>
         </Card>
       </div>
-
-      {summary.top_tools.length > 0 && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Top Tools</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex flex-wrap gap-2">
-              {summary.top_tools.map(([name, count]) => (
-                <Badge key={name} variant="secondary" className="gap-1">
-                  {name}
-                  <span className="ml-1 text-muted-foreground">{count}</span>
-                </Badge>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
 
       <Card>
         <CardHeader className="pb-2">
@@ -309,17 +451,38 @@ export function ActivityPanel() {
             <div>
               <CardTitle className="flex items-center gap-2 text-sm font-medium">
                 <Activity className="h-4 w-4" />
-                Telemetry Timeline
-                {loading && (
-                  <span className="text-xs text-muted-foreground animate-pulse">updating...</span>
-                )}
+                {viewMode === "flow" ? "Execution Flow" : "Telemetry Timeline"}
+                {loading && <span className="text-xs text-muted-foreground animate-pulse">updating...</span>}
               </CardTitle>
               <p className="mt-1 text-xs text-muted-foreground">
-                Showing {visibleRecords.length} normalized rows from {scopedEvents.length} raw events.
+                {viewMode === "flow"
+                  ? primarySessionId
+                    ? `${focusedSessionIds.length > 0 ? "Focused" : "Latest"} session ${formatSessionId(primarySessionId)} shown as actor → task → tool flow.`
+                    : "Select or create a session to inspect the execution flow."
+                  : `Showing ${visibleTimelineRecords.length} normalized rows from ${scopedEvents.length} raw events.`}
               </p>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_160px_160px]">
+            <div className="grid gap-3 sm:grid-cols-[auto_minmax(0,1fr)_160px_160px]">
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">View</label>
+                <div className="flex gap-2">
+                  <Button
+                    variant={viewMode === "flow" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setViewMode("flow")}
+                  >
+                    Flow
+                  </Button>
+                  <Button
+                    variant={viewMode === "timeline" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setViewMode("timeline")}
+                  >
+                    Timeline
+                  </Button>
+                </div>
+              </div>
               <div className="space-y-1">
                 <label className="text-xs font-medium text-muted-foreground">Search telemetry</label>
                 <Input
@@ -346,6 +509,7 @@ export function ActivityPanel() {
                 <Select
                   value={sortMode}
                   onChange={(event) => setSortMode(event.target.value as ActivitySortMode)}
+                  disabled={viewMode === "flow"}
                 >
                   <option value="severity">Severity</option>
                   <option value="recent">Newest first</option>
@@ -357,9 +521,9 @@ export function ActivityPanel() {
         </CardHeader>
         <CardContent>
           <div className="mb-4 flex flex-wrap gap-2">
-            <Badge variant={getSeverityBadgeVariant("error")}>{severityCounts.error} errors</Badge>
-            <Badge variant={getSeverityBadgeVariant("warning")}>{severityCounts.warning} warnings</Badge>
-            <Badge variant={getSeverityBadgeVariant("info")}>{severityCounts.info} info</Badge>
+            <Badge variant={getSeverityBadgeVariant("error")}>{visibleRecordCounts.error} errors</Badge>
+            <Badge variant={getSeverityBadgeVariant("warning")}>{visibleRecordCounts.warning} warnings</Badge>
+            <Badge variant={getSeverityBadgeVariant("info")}>{visibleRecordCounts.info} info</Badge>
             {(query || severityFilter !== "all") && (
               <Button
                 variant="ghost"
@@ -375,73 +539,31 @@ export function ActivityPanel() {
             )}
           </div>
 
-          {visibleRecords.length === 0 ? (
+          {viewMode === "flow" ? (
+            !primarySessionId ? (
+              <p className="py-8 text-center text-sm text-muted-foreground">
+                No session selected yet. Start a run or focus a session to inspect the execution flow.
+              </p>
+            ) : filteredSessionRecords.length === 0 ? (
+              <p className="py-8 text-center text-sm text-muted-foreground">
+                No flow steps match the current filters for {formatSessionId(primarySessionId)}.
+              </p>
+            ) : (
+              <div className="space-y-4">
+                {flowActors.map((actor) => (
+                  <FlowActorCard key={actor.actor_id} actor={actor} />
+                ))}
+              </div>
+            )
+          ) : visibleTimelineRecords.length === 0 ? (
             <p className="py-8 text-center text-sm text-muted-foreground">
               No telemetry rows match the current filters.
             </p>
           ) : (
             <div className="space-y-2">
-              {visibleRecords.map((record) => {
-                const Icon = getTelemetryIcon(record);
-                return (
-                  <div
-                    key={record.event_id}
-                    className={cn(
-                      "rounded-md border px-3 py-2 transition-colors hover:bg-muted/40",
-                      record.severity === "error" && "border-destructive/25 bg-destructive/5",
-                      record.severity === "warning" && "border-yellow-500/25 bg-yellow-500/5",
-                    )}
-                  >
-                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
-                      <div className="flex min-w-0 flex-1 items-start gap-3">
-                        <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                        <div className="min-w-0 space-y-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Badge variant={getSeverityBadgeVariant(record.severity)}>
-                              {formatSeverityLabel(record.severity)}
-                            </Badge>
-                            <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
-                              {record.operation}
-                            </Badge>
-                            <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
-                              {record.actor_label}
-                            </Badge>
-                            <button
-                              type="button"
-                              onClick={() => focusSingleSession(record.session_id)}
-                              className="rounded-md border px-2 py-0.5 text-[10px] font-mono text-muted-foreground transition-colors hover:bg-background"
-                            >
-                              {formatSessionId(record.session_id)}
-                            </button>
-                            {record.tool_name && (
-                              <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
-                                {record.tool_name}
-                              </Badge>
-                            )}
-                            {record.model && (
-                              <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
-                                {truncate(record.model, 24)}
-                              </Badge>
-                            )}
-                          </div>
-                          <p className="text-sm font-medium">{record.summary}</p>
-                          {record.detail && (
-                            <p className="text-xs text-muted-foreground">{record.detail}</p>
-                          )}
-                          <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
-                            <span>{record.hook_event_type}</span>
-                            {record.resource && <span>{truncate(record.resource, 80)}</span>}
-                            {record.task_id && <span>task {truncate(record.task_id, 18)}</span>}
-                          </div>
-                        </div>
-                      </div>
-                      <span className="shrink-0 text-[10px] text-muted-foreground">
-                        {formatTime(record.timestamp)}
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
+              {visibleTimelineRecords.map((record) => (
+                <StepRow key={record.event_id} record={record} />
+              ))}
             </div>
           )}
         </CardContent>
