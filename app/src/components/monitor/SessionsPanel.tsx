@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMonitorStore, computeSessions } from "@/lib/store/monitor";
+import { getScopedEvents, summarizeAgents, summarizeTasks } from "@/lib/telemetry";
 import {
   formatSeverityLabel,
   getSessionSeverity,
@@ -61,6 +62,11 @@ function formatSessionId(sessionId: string): string {
   return `${sessionId.slice(0, 8)}…${sessionId.slice(-4)}`;
 }
 
+function formatOptionalDuration(seconds?: number): string {
+  if (seconds === undefined) return "-";
+  return formatDuration(seconds);
+}
+
 export function SessionsPanel() {
   const events = useMonitorStore((state) => state.events);
   const loading = useMonitorStore((state) => state.loading);
@@ -79,6 +85,18 @@ export function SessionsPanel() {
   const focusedSessions = useMemo(
     () => sessions.filter((session) => focusedSessionIds.includes(session.session_id)),
     [focusedSessionIds, sessions],
+  );
+  const focusedEvents = useMemo(
+    () => (focusedSessionIds.length > 0 ? getScopedEvents(events, focusedSessionIds) : []),
+    [events, focusedSessionIds],
+  );
+  const focusedAgentSummaries = useMemo(
+    () => (focusedEvents.length > 0 ? summarizeAgents(focusedEvents) : []),
+    [focusedEvents],
+  );
+  const focusedTaskSummaries = useMemo(
+    () => (focusedEvents.length > 0 ? summarizeTasks(focusedEvents) : []),
+    [focusedEvents],
   );
 
   const filteredSessions = useMemo(() => {
@@ -142,74 +160,191 @@ export function SessionsPanel() {
     );
   }
 
+  const showFocusedSessionColumn = focusedSessions.length > 1;
+
   return (
     <div className="space-y-4">
       {focusedSessions.length > 0 && (
         <Card className="border-primary/20 bg-primary/5">
-          <CardContent className="flex flex-col gap-3 py-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="space-y-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge variant="secondary">Focused sessions</Badge>
-                <span className="text-sm font-medium">
-                  {focusedSessions.length} active across monitor views
-                </span>
+          <CardContent className="space-y-4 py-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="secondary">Focused sessions</Badge>
+                  <span className="text-sm font-medium">
+                    {focusedSessions.length} active across monitor views
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {focusedSessions.map((session) => (
+                    <button
+                      key={session.session_id}
+                      type="button"
+                      onClick={() => focusSingleSession(session.session_id)}
+                      className="rounded-md border bg-background px-2 py-1 text-xs font-mono transition-colors hover:bg-muted"
+                    >
+                      {formatSessionId(session.session_id)}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div className="flex flex-wrap gap-2">
-                {focusedSessions.map((session) => (
-                  <button
-                    key={session.session_id}
-                    type="button"
-                    onClick={() => focusSingleSession(session.session_id)}
-                    className="rounded-md border bg-background px-2 py-1 text-xs font-mono transition-colors hover:bg-muted"
-                  >
-                    {formatSessionId(session.session_id)}
-                  </button>
-                ))}
-              </div>
-
-              <div className="rounded-md border bg-background/80">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Session</TableHead>
-                      <TableHead className="text-right">Events</TableHead>
-                      <TableHead className="text-right">Errors</TableHead>
-                      <TableHead className="text-right">Tools</TableHead>
-                      <TableHead className="text-right">Cost</TableHead>
-                      <TableHead className="text-right">Duration</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {focusedSessions.map((session) => (
-                      <TableRow key={session.session_id}>
-                        <TableCell className="font-mono text-xs">
-                          {formatSessionId(session.session_id)}
-                        </TableCell>
-                        <TableCell className="text-right">{session.event_count}</TableCell>
-                        <TableCell
-                          className={cn(
-                            "text-right",
-                            session.errors > 0 && "font-medium text-destructive",
-                          )}
-                        >
-                          {session.errors}
-                        </TableCell>
-                        <TableCell className="text-right">{session.tool_uses}</TableCell>
-                        <TableCell className="text-right">
-                          {formatCost(session.cost_usd)}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          {formatDuration(session.duration_seconds)}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
+              <Button variant="ghost" size="sm" onClick={clearFocusedSessions}>
+                Clear focus
+              </Button>
             </div>
-            <Button variant="ghost" size="sm" onClick={clearFocusedSessions}>
-              Clear focus
-            </Button>
+
+            <div className="rounded-md border bg-background/80">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Session</TableHead>
+                    <TableHead className="text-right">Events</TableHead>
+                    <TableHead className="text-right">Errors</TableHead>
+                    <TableHead className="text-right">Tools</TableHead>
+                    <TableHead className="text-right">Cost</TableHead>
+                    <TableHead className="text-right">Duration</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {focusedSessions.map((session) => (
+                    <TableRow key={session.session_id}>
+                      <TableCell className="font-mono text-xs">
+                        {formatSessionId(session.session_id)}
+                      </TableCell>
+                      <TableCell className="text-right">{session.event_count}</TableCell>
+                      <TableCell
+                        className={cn(
+                          "text-right",
+                          session.errors > 0 && "font-medium text-destructive",
+                        )}
+                      >
+                        {session.errors}
+                      </TableCell>
+                      <TableCell className="text-right">{session.tool_uses}</TableCell>
+                      <TableCell className="text-right">{formatCost(session.cost_usd)}</TableCell>
+                      <TableCell className="text-right">
+                        {formatDuration(session.duration_seconds)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+
+            <div className="grid gap-4 xl:grid-cols-2">
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="flex items-center gap-2 text-sm font-medium">
+                    <Bot className="h-4 w-4" />
+                    Agent Telemetry
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {focusedAgentSummaries.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No agent telemetry in scope yet.</p>
+                  ) : (
+                    <div className="rounded-md border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            {showFocusedSessionColumn && <TableHead>Session</TableHead>}
+                            <TableHead>Actor</TableHead>
+                            <TableHead>Kind</TableHead>
+                            <TableHead className="text-right">Events</TableHead>
+                            <TableHead className="text-right">Tools</TableHead>
+                            <TableHead className="text-right">Fail</TableHead>
+                            <TableHead className="text-right">Tasks</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {focusedAgentSummaries.slice(0, 8).map((agent) => (
+                            <TableRow key={`${agent.session_id}:${agent.actor_id}`}>
+                              {showFocusedSessionColumn && (
+                                <TableCell className="font-mono text-[11px]">
+                                  {formatSessionId(agent.session_id)}
+                                </TableCell>
+                              )}
+                              <TableCell className="max-w-[180px] truncate">
+                                {agent.actor_label}
+                              </TableCell>
+                              <TableCell className="capitalize text-muted-foreground">
+                                {agent.actor_kind}
+                              </TableCell>
+                              <TableCell className="text-right">{agent.event_count}</TableCell>
+                              <TableCell className="text-right">{agent.tool_calls}</TableCell>
+                              <TableCell
+                                className={cn(
+                                  "text-right",
+                                  agent.failures > 0 && "font-medium text-destructive",
+                                )}
+                              >
+                                {agent.failures}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {agent.tasks_completed}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium">Task Telemetry</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {focusedTaskSummaries.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No task telemetry in scope yet.</p>
+                  ) : (
+                    <div className="rounded-md border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            {showFocusedSessionColumn && <TableHead>Session</TableHead>}
+                            <TableHead>Status</TableHead>
+                            <TableHead>Owner</TableHead>
+                            <TableHead className="text-right">Duration</TableHead>
+                            <TableHead>Subject</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {focusedTaskSummaries.slice(0, 8).map((task) => (
+                            <TableRow key={`${task.session_id}:${task.task_id}`}>
+                              {showFocusedSessionColumn && (
+                                <TableCell className="font-mono text-[11px]">
+                                  {formatSessionId(task.session_id)}
+                                </TableCell>
+                              )}
+                              <TableCell>
+                                <Badge
+                                  variant={task.status === "completed" ? "secondary" : "outline"}
+                                  className="capitalize"
+                                >
+                                  {task.status}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="max-w-[120px] truncate">
+                                {task.owner}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {formatOptionalDuration(task.duration_seconds)}
+                              </TableCell>
+                              <TableCell className="max-w-[240px] truncate">
+                                {task.subject}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
           </CardContent>
         </Card>
       )}

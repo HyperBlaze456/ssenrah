@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMonitorStore, computeSummary, computeSessions } from "@/lib/store/monitor";
 import {
-  formatSeverityLabel,
-  getEventFingerprint,
-  getEventSeverity,
-  getSeverityBadgeVariant,
-  monitorSeverityRank,
-  type MonitorSeverity,
-} from "@/lib/monitor-utils";
+  deriveTelemetryTimeline,
+  getScopedEvents,
+  summarizeAgents,
+  summarizeTasks,
+  type TelemetryRecord,
+  type TelemetrySeverity,
+} from "@/lib/telemetry";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,46 +16,69 @@ import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import {
   Activity,
-  Terminal,
-  FileText,
   AlertCircle,
+  Bell,
   Bot,
+  CheckCircle,
+  FileText,
   Play,
   Square,
-  Bell,
-  CheckCircle,
+  Terminal,
 } from "lucide-react";
-import type { AgentEvent } from "@/types";
 
-type SeverityFilter = "all" | MonitorSeverity;
+type SeverityFilter = "all" | TelemetrySeverity;
 type ActivitySortMode = "severity" | "recent" | "oldest";
 
-interface EventGroup {
-  key: string;
-  representative: AgentEvent;
-  severity: MonitorSeverity;
-  count: number;
-  firstTimestamp: string;
-  lastTimestamp: string;
+function telemetrySeverityRank(severity: TelemetrySeverity): number {
+  switch (severity) {
+    case "error":
+      return 3;
+    case "warning":
+      return 2;
+    case "info":
+    default:
+      return 1;
+  }
 }
 
-function getEventIcon(type: string) {
-  if (type.includes("ToolUse")) return Terminal;
-  if (type.includes("Subagent")) return Bot;
-  if (type.includes("Session")) return type.includes("Start") ? Play : Square;
-  if (type.includes("Task")) return CheckCircle;
-  if (type.includes("Notification")) return Bell;
-  if (type.includes("Failure") || type.includes("error")) return AlertCircle;
-  if (type.includes("Stop")) return Square;
-  return FileText;
+function getSeverityBadgeVariant(severity: TelemetrySeverity): "secondary" | "outline" | "destructive" {
+  switch (severity) {
+    case "error":
+      return "destructive";
+    case "warning":
+      return "outline";
+    case "info":
+    default:
+      return "secondary";
+  }
 }
 
-function getEventColor(type: string) {
-  if (type.includes("Failure") || type.includes("error")) return "destructive";
-  if (type === "_escalation") return "destructive";
-  if (type.includes("Start")) return "default";
-  if (type.includes("Stop") || type.includes("End")) return "secondary";
-  return "outline";
+function formatSeverityLabel(severity: TelemetrySeverity): string {
+  switch (severity) {
+    case "error":
+      return "Error";
+    case "warning":
+      return "Warning";
+    case "info":
+    default:
+      return "Info";
+  }
+}
+
+function getTelemetryIcon(record: TelemetryRecord) {
+  if (record.operation.startsWith("tool.")) return Terminal;
+  if (record.operation.startsWith("agent.")) return Bot;
+  if (record.operation.startsWith("session.")) {
+    return record.operation.endsWith("start") ? Play : Square;
+  }
+  if (record.operation.startsWith("task.")) return CheckCircle;
+  if (record.operation.startsWith("notification") || record.operation.startsWith("alert.")) {
+    return Bell;
+  }
+  if (record.operation.startsWith("file.") || record.operation.startsWith("config.")) {
+    return FileText;
+  }
+  return Activity;
 }
 
 function formatTime(iso: string): string {
@@ -72,61 +95,30 @@ function formatSessionId(sessionId: string): string {
   return `${sessionId.slice(0, 8)}…${sessionId.slice(-4)}`;
 }
 
-function matchesQuery(event: AgentEvent, query: string): boolean {
+function truncate(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+
+function matchesQuery(record: TelemetryRecord, query: string): boolean {
   if (!query) return true;
-  const haystack = [
-    event.session_id,
-    event.hook_event_type,
-    event.tool_name,
-    event.message,
-    event.error,
-    event.reason,
-    event.notification_type,
-    event.task_subject,
-    event.agent_type,
+
+  return [
+    record.session_id,
+    record.hook_event_type,
+    record.operation,
+    record.actor_label,
+    record.actor_kind,
+    record.summary,
+    record.detail,
+    record.resource,
+    record.task_id,
+    record.tool_name,
+    record.model,
   ]
     .filter(Boolean)
     .join(" ")
-    .toLowerCase();
-
-  return haystack.includes(query);
-}
-
-function EventDetail({ event }: { event: AgentEvent }) {
-  if (event.tool_name) {
-    return <span className="text-muted-foreground">{event.tool_name}</span>;
-  }
-  if (event.agent_type) {
-    return <span className="text-muted-foreground">{event.agent_type}</span>;
-  }
-  if (event.task_subject) {
-    return (
-      <span className="inline-block max-w-[240px] truncate align-bottom text-muted-foreground">
-        {event.task_subject}
-      </span>
-    );
-  }
-  if (event.error) {
-    return (
-      <span className="inline-block max-w-[240px] truncate align-bottom text-destructive">
-        {event.error}
-      </span>
-    );
-  }
-  if (event.notification_type) {
-    return <span className="text-muted-foreground">{event.notification_type}</span>;
-  }
-  if (event.message) {
-    return (
-      <span className="inline-block max-w-[280px] truncate align-bottom text-muted-foreground">
-        {event.message}
-      </span>
-    );
-  }
-  if (event.reason) {
-    return <span className="text-muted-foreground">{event.reason}</span>;
-  }
-  return null;
+    .toLowerCase()
+    .includes(query);
 }
 
 export function ActivityPanel() {
@@ -149,78 +141,47 @@ export function ActivityPanel() {
     [focusedSessionIds, sessions],
   );
   const scopedEvents = useMemo(
-    () =>
-      focusedSessionIds.length > 0
-        ? events.filter((event) => focusedSessionIds.includes(event.session_id))
-        : events,
+    () => getScopedEvents(events, focusedSessionIds),
     [events, focusedSessionIds],
   );
   const summary = useMemo(() => computeSummary(scopedEvents), [scopedEvents]);
+  const timeline = useMemo(() => deriveTelemetryTimeline(scopedEvents), [scopedEvents]);
+  const agentSummaries = useMemo(() => summarizeAgents(scopedEvents), [scopedEvents]);
+  const taskSummaries = useMemo(() => summarizeTasks(scopedEvents), [scopedEvents]);
 
-  const visibleGroups = useMemo(() => {
+  const visibleRecords = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-    const filteredEvents = scopedEvents.filter((event) => {
-      const severity = getEventSeverity(event);
-      if (severityFilter !== "all" && severity !== severityFilter) return false;
-      return matchesQuery(event, normalizedQuery);
+    const filteredRecords = timeline.filter((record) => {
+      if (severityFilter !== "all" && record.severity !== severityFilter) return false;
+      return matchesQuery(record, normalizedQuery);
     });
 
-    const grouped = new Map<string, EventGroup>();
-    for (const event of filteredEvents) {
-      const key = getEventFingerprint(event);
-      const severity = getEventSeverity(event);
-      const existing = grouped.get(key);
-      if (!existing) {
-        grouped.set(key, {
-          key,
-          representative: event,
-          severity,
-          count: 1,
-          firstTimestamp: event.timestamp,
-          lastTimestamp: event.timestamp,
-        });
-        continue;
-      }
-
-      existing.count += 1;
-      if (event.timestamp < existing.firstTimestamp) {
-        existing.firstTimestamp = event.timestamp;
-      }
-      if (event.timestamp >= existing.lastTimestamp) {
-        existing.lastTimestamp = event.timestamp;
-        existing.representative = event;
-      }
-      if (monitorSeverityRank(severity) > monitorSeverityRank(existing.severity)) {
-        existing.severity = severity;
-      }
-    }
-
-    return [...grouped.values()]
+    return [...filteredRecords]
       .sort((left, right) => {
         switch (sortMode) {
           case "oldest":
-            return left.firstTimestamp.localeCompare(right.firstTimestamp);
+            return left.timestamp.localeCompare(right.timestamp);
           case "recent":
-            return right.lastTimestamp.localeCompare(left.lastTimestamp);
+            return right.timestamp.localeCompare(left.timestamp);
           case "severity":
           default: {
             const severityDelta =
-              monitorSeverityRank(right.severity) - monitorSeverityRank(left.severity);
+              telemetrySeverityRank(right.severity) - telemetrySeverityRank(left.severity);
             if (severityDelta !== 0) return severityDelta;
-            return right.lastTimestamp.localeCompare(left.lastTimestamp);
+            return right.timestamp.localeCompare(left.timestamp);
           }
         }
       })
-      .slice(0, 100);
-  }, [query, scopedEvents, severityFilter, sortMode]);
+      .slice(0, 150);
+  }, [query, severityFilter, sortMode, timeline]);
 
   const severityCounts = useMemo(
     () => ({
-      critical: visibleGroups.filter((group) => group.severity === "critical").length,
-      warning: visibleGroups.filter((group) => group.severity === "warning").length,
-      info: visibleGroups.filter((group) => group.severity === "info").length,
+      error: visibleRecords.filter((record) => record.severity === "error").length,
+      warning: visibleRecords.filter((record) => record.severity === "warning").length,
+      info: visibleRecords.filter((record) => record.severity === "info").length,
     }),
-    [visibleGroups],
+    [visibleRecords],
   );
 
   useEffect(() => {
@@ -232,7 +193,7 @@ export function ActivityPanel() {
     return (
       <div className="p-4 text-destructive">
         <AlertCircle className="mr-2 inline h-4 w-4" />
-        Failed to load events: {error}
+        Failed to load telemetry: {error}
       </div>
     );
   }
@@ -269,15 +230,15 @@ export function ActivityPanel() {
         </Card>
       )}
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              Total Events
+              Timeline Rows
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{summary.total_events}</div>
+            <div className="text-2xl font-bold">{timeline.length}</div>
           </CardContent>
         </Card>
         <Card>
@@ -293,15 +254,21 @@ export function ActivityPanel() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              Critical / Warning
+              Actors
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">
-              {severityCounts.critical}
-              <span className="mx-1 text-muted-foreground">/</span>
-              <span className="text-yellow-500">{severityCounts.warning}</span>
-            </div>
+            <div className="text-2xl font-bold">{agentSummaries.length}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              Tasks
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{taskSummaries.length}</div>
           </CardContent>
         </Card>
         <Card>
@@ -342,50 +309,40 @@ export function ActivityPanel() {
             <div>
               <CardTitle className="flex items-center gap-2 text-sm font-medium">
                 <Activity className="h-4 w-4" />
-                Event Feed
+                Telemetry Timeline
                 {loading && (
-                  <span className="text-xs text-muted-foreground animate-pulse">
-                    updating...
-                  </span>
+                  <span className="text-xs text-muted-foreground animate-pulse">updating...</span>
                 )}
               </CardTitle>
               <p className="mt-1 text-xs text-muted-foreground">
-                Showing {visibleGroups.length} grouped rows from {scopedEvents.length} raw events.
+                Showing {visibleRecords.length} normalized rows from {scopedEvents.length} raw events.
               </p>
             </div>
 
             <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_160px_160px]">
               <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">
-                  Search events
-                </label>
+                <label className="text-xs font-medium text-muted-foreground">Search telemetry</label>
                 <Input
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Tool, error, message, session"
-                  className="min-w-[240px]"
+                  placeholder="Operation, actor, task, tool, resource"
+                  className="min-w-[260px]"
                 />
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">
-                  Severity
-                </label>
+                <label className="text-xs font-medium text-muted-foreground">Severity</label>
                 <Select
                   value={severityFilter}
-                  onChange={(event) =>
-                    setSeverityFilter(event.target.value as SeverityFilter)
-                  }
+                  onChange={(event) => setSeverityFilter(event.target.value as SeverityFilter)}
                 >
                   <option value="all">All severities</option>
-                  <option value="critical">Critical</option>
-                  <option value="warning">Warning</option>
+                  <option value="error">Errors</option>
+                  <option value="warning">Warnings</option>
                   <option value="info">Info</option>
                 </Select>
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">
-                  Sort by
-                </label>
+                <label className="text-xs font-medium text-muted-foreground">Sort by</label>
                 <Select
                   value={sortMode}
                   onChange={(event) => setSortMode(event.target.value as ActivitySortMode)}
@@ -400,15 +357,9 @@ export function ActivityPanel() {
         </CardHeader>
         <CardContent>
           <div className="mb-4 flex flex-wrap gap-2">
-            <Badge variant={getSeverityBadgeVariant("critical")}>
-              {severityCounts.critical} critical
-            </Badge>
-            <Badge variant={getSeverityBadgeVariant("warning")}>
-              {severityCounts.warning} warnings
-            </Badge>
-            <Badge variant={getSeverityBadgeVariant("info")}>
-              {severityCounts.info} info
-            </Badge>
+            <Badge variant={getSeverityBadgeVariant("error")}>{severityCounts.error} errors</Badge>
+            <Badge variant={getSeverityBadgeVariant("warning")}>{severityCounts.warning} warnings</Badge>
+            <Badge variant={getSeverityBadgeVariant("info")}>{severityCounts.info} info</Badge>
             {(query || severityFilter !== "all") && (
               <Button
                 variant="ghost"
@@ -424,22 +375,21 @@ export function ActivityPanel() {
             )}
           </div>
 
-          {visibleGroups.length === 0 ? (
+          {visibleRecords.length === 0 ? (
             <p className="py-8 text-center text-sm text-muted-foreground">
-              No events match the current filters.
+              No telemetry rows match the current filters.
             </p>
           ) : (
             <div className="space-y-2">
-              {visibleGroups.map((group) => {
-                const event = group.representative;
-                const Icon = getEventIcon(event.hook_event_type);
+              {visibleRecords.map((record) => {
+                const Icon = getTelemetryIcon(record);
                 return (
                   <div
-                    key={group.key}
+                    key={record.event_id}
                     className={cn(
                       "rounded-md border px-3 py-2 transition-colors hover:bg-muted/40",
-                      group.severity === "critical" && "border-destructive/25 bg-destructive/5",
-                      group.severity === "warning" && "border-yellow-500/25 bg-yellow-500/5",
+                      record.severity === "error" && "border-destructive/25 bg-destructive/5",
+                      record.severity === "warning" && "border-yellow-500/25 bg-yellow-500/5",
                     )}
                   >
                     <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
@@ -447,38 +397,46 @@ export function ActivityPanel() {
                         <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
                         <div className="min-w-0 space-y-1">
                           <div className="flex flex-wrap items-center gap-2">
-                            <Badge variant={getSeverityBadgeVariant(group.severity)}>
-                              {formatSeverityLabel(group.severity)}
+                            <Badge variant={getSeverityBadgeVariant(record.severity)}>
+                              {formatSeverityLabel(record.severity)}
                             </Badge>
-                            <Badge
-                              variant={getEventColor(event.hook_event_type) as "default" | "secondary" | "destructive" | "outline"}
-                              className="px-1.5 py-0 text-[10px]"
-                            >
-                              {event.hook_event_type}
+                            <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+                              {record.operation}
                             </Badge>
-                            {group.count > 1 && (
-                              <Badge variant="secondary">×{group.count}</Badge>
-                            )}
+                            <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
+                              {record.actor_label}
+                            </Badge>
                             <button
                               type="button"
-                              onClick={() => focusSingleSession(event.session_id)}
+                              onClick={() => focusSingleSession(record.session_id)}
                               className="rounded-md border px-2 py-0.5 text-[10px] font-mono text-muted-foreground transition-colors hover:bg-background"
                             >
-                              {formatSessionId(event.session_id)}
+                              {formatSessionId(record.session_id)}
                             </button>
+                            {record.tool_name && (
+                              <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
+                                {record.tool_name}
+                              </Badge>
+                            )}
+                            {record.model && (
+                              <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+                                {truncate(record.model, 24)}
+                              </Badge>
+                            )}
                           </div>
-                          <div className="text-sm">
-                            <EventDetail event={event} />
+                          <p className="text-sm font-medium">{record.summary}</p>
+                          {record.detail && (
+                            <p className="text-xs text-muted-foreground">{record.detail}</p>
+                          )}
+                          <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
+                            <span>{record.hook_event_type}</span>
+                            {record.resource && <span>{truncate(record.resource, 80)}</span>}
+                            {record.task_id && <span>task {truncate(record.task_id, 18)}</span>}
                           </div>
-                          <p className="text-[10px] text-muted-foreground">
-                            {group.count > 1
-                              ? `Seen ${group.count} times from ${formatTime(group.firstTimestamp)} to ${formatTime(group.lastTimestamp)}`
-                              : `Seen at ${formatTime(group.lastTimestamp)}`}
-                          </p>
                         </div>
                       </div>
                       <span className="shrink-0 text-[10px] text-muted-foreground">
-                        {formatTime(group.lastTimestamp)}
+                        {formatTime(record.timestamp)}
                       </span>
                     </div>
                   </div>

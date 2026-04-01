@@ -1,44 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMonitorStore } from "@/lib/store/monitor";
-import { readTextFile, exists } from "@tauri-apps/plugin-fs";
+import {
+  getSessionIdsByRecency,
+  getSessionTranscriptPath,
+  readSessionCost,
+  type SessionCost,
+} from "@/lib/telemetry";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { cn } from "@/lib/utils";
 import { DollarSign, Coins, Zap, Database, AlertCircle } from "lucide-react";
-
-interface SessionCost {
-  session_id: string;
-  model: string;
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_input_tokens: number;
-  cache_creation_input_tokens: number;
-  total_tokens: number;
-  cost_usd: number;
-}
-
-interface ModelPricing {
-  input: number;
-  output: number;
-  cache_read: number;
-  cache_creation: number;
-}
-
-const MODEL_PRICING: Record<string, ModelPricing> = {
-  "claude-opus-4-6": { input: 15, output: 75, cache_read: 1.5, cache_creation: 18.75 },
-  "claude-sonnet-4-6": { input: 3, output: 15, cache_read: 0.3, cache_creation: 3.75 },
-  "claude-haiku-4-5": { input: 0.8, output: 4, cache_read: 0.08, cache_creation: 1 },
-};
-
-const FALLBACK_PRICING = MODEL_PRICING["claude-sonnet-4-6"]!;
-
-function getPricing(model: string): ModelPricing {
-  if (MODEL_PRICING[model]) return MODEL_PRICING[model]!;
-  for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
-    if (model.startsWith(key)) return pricing;
-  }
-  return FALLBACK_PRICING;
-}
 
 function formatTokens(count: number): string {
   if (count < 1000) return String(count);
@@ -53,190 +23,150 @@ function formatCost(usd: number): string {
   return `$${usd.toFixed(2)}`;
 }
 
-async function parseTranscriptCost(
-  transcriptPath: string,
-  sessionId: string
-): Promise<SessionCost | null> {
-  try {
-    const fileExists = await exists(transcriptPath);
-    if (!fileExists) return null;
-
-    const content = await readTextFile(transcriptPath);
-    const lines = content.split("\n").filter(Boolean);
-
-    let model = "unknown";
-    const totals = {
-      input_tokens: 0,
-      output_tokens: 0,
-      cache_read_input_tokens: 0,
-      cache_creation_input_tokens: 0,
-    };
-    let hasUsage = false;
-
-    for (const line of lines) {
-      let entry: Record<string, unknown>;
-      try {
-        entry = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (entry.type !== "assistant") continue;
-
-      const message = entry.message as Record<string, unknown> | undefined;
-      if (!message) continue;
-
-      if (model === "unknown" && typeof message.model === "string") {
-        model = message.model;
-      }
-
-      const usage = message.usage as Record<string, number> | undefined;
-      if (!usage) continue;
-
-      hasUsage = true;
-      totals.input_tokens += usage.input_tokens ?? 0;
-      totals.output_tokens += usage.output_tokens ?? 0;
-      totals.cache_read_input_tokens += usage.cache_read_input_tokens ?? 0;
-      totals.cache_creation_input_tokens +=
-        usage.cache_creation_input_tokens ?? 0;
-    }
-
-    if (!hasUsage) return null;
-
-    const pricing = getPricing(model);
-    const cost_usd =
-      (totals.input_tokens / 1_000_000) * pricing.input +
-      (totals.output_tokens / 1_000_000) * pricing.output +
-      (totals.cache_read_input_tokens / 1_000_000) * pricing.cache_read +
-      (totals.cache_creation_input_tokens / 1_000_000) * pricing.cache_creation;
-
-    const total_tokens =
-      totals.input_tokens +
-      totals.output_tokens +
-      totals.cache_read_input_tokens +
-      totals.cache_creation_input_tokens;
-
-    return {
-      session_id: sessionId,
-      model,
-      ...totals,
-      total_tokens,
-      cost_usd: Math.round(cost_usd * 10000) / 10000,
-    };
-  } catch {
-    return null;
-  }
+function formatSessionId(sessionId: string): string {
+  return `${sessionId.slice(0, 8)}…${sessionId.slice(-4)}`;
 }
 
 export function CostPanel() {
-  const events = useMonitorStore((s) => s.events);
-  const loading = useMonitorStore((s) => s.loading);
-  const error = useMonitorStore((s) => s.error);
-  const startAutoRefresh = useMonitorStore((s) => s.startAutoRefresh);
-  const stopAutoRefresh = useMonitorStore((s) => s.stopAutoRefresh);
+  const events = useMonitorStore((state) => state.events);
+  const loading = useMonitorStore((state) => state.loading);
+  const error = useMonitorStore((state) => state.error);
+  const startAutoRefresh = useMonitorStore((state) => state.startAutoRefresh);
+  const stopAutoRefresh = useMonitorStore((state) => state.stopAutoRefresh);
+  const focusedSessionIds = useMonitorStore((state) => state.focusedSessionIds);
 
   const [costs, setCosts] = useState<SessionCost[]>([]);
   const [costLoading, setCostLoading] = useState(false);
+
+  const scopedSessionIds = useMemo(
+    () => getSessionIdsByRecency(events, focusedSessionIds),
+    [events, focusedSessionIds],
+  );
 
   useEffect(() => {
     startAutoRefresh(10000);
     return () => stopAutoRefresh();
   }, [startAutoRefresh, stopAutoRefresh]);
 
-  // Extract transcript paths and compute costs
   useEffect(() => {
-    if (events.length === 0) return;
-
-    const sessionTranscripts = new Map<string, string>();
-    for (const e of events) {
-      const raw = e._raw as Record<string, unknown> | undefined;
-      if (raw?.transcript_path && typeof raw.transcript_path === "string") {
-        sessionTranscripts.set(e.session_id, raw.transcript_path);
-      }
+    if (scopedSessionIds.length === 0) {
+      setCosts([]);
+      setCostLoading(false);
+      return;
     }
 
-    if (sessionTranscripts.size === 0) return;
-
+    let cancelled = false;
     setCostLoading(true);
+
     Promise.all(
-      [...sessionTranscripts.entries()].map(([sessionId, path]) =>
-        parseTranscriptCost(path, sessionId)
-      )
-    ).then((results) => {
-      setCosts(results.filter((c): c is SessionCost => c !== null));
-      setCostLoading(false);
-    });
-  }, [events]);
+      scopedSessionIds.map(async (sessionId) => {
+        const transcriptPath = getSessionTranscriptPath(events, sessionId);
+        if (!transcriptPath) return null;
+        return readSessionCost(transcriptPath, sessionId);
+      }),
+    )
+      .then((results) => {
+        if (cancelled) return;
+        setCosts(results.filter((cost): cost is SessionCost => cost !== null));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setCostLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [events, scopedSessionIds]);
 
   if (error) {
     return (
       <div className="p-4 text-destructive">
-        <AlertCircle className="inline h-4 w-4 mr-2" />
+        <AlertCircle className="mr-2 inline h-4 w-4" />
         Failed to load cost data: {error}
       </div>
     );
   }
 
-  const grandTotal = costs.reduce((sum, c) => sum + c.cost_usd, 0);
-  const totalTokens = costs.reduce((sum, c) => sum + c.total_tokens, 0);
+  const grandTotal = costs.reduce((sum, cost) => sum + cost.cost_usd, 0);
+  const totalTokens = costs.reduce((sum, cost) => sum + cost.total_tokens, 0);
 
   return (
     <div className="space-y-6">
-      {/* Grand total card */}
+      {focusedSessionIds.length > 0 && (
+        <Card className="border-primary/20 bg-primary/5">
+          <CardContent className="flex flex-col gap-2 py-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="secondary">Focused sessions</Badge>
+                <span className="text-sm font-medium">
+                  {scopedSessionIds.length} session{scopedSessionIds.length !== 1 ? "s" : ""} in cost scope
+                </span>
+              </div>
+              {focusedSessionIds.length > 1 && (
+                <p className="text-xs text-muted-foreground">
+                  Cost totals are limited to the focused sessions.
+                </p>
+              )}
+            </div>
+            <span className="text-xs text-muted-foreground">
+              {loading || costLoading ? "refreshing…" : `${costs.length} transcript${costs.length !== 1 ? "s" : ""} loaded`}
+            </span>
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+            <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
               <DollarSign className="h-4 w-4" />
               Total Estimated Cost
             </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold">{formatCost(grandTotal)}</div>
-            <p className="text-xs text-muted-foreground mt-1">
-              API-equivalent pricing
-            </p>
+            <p className="mt-1 text-xs text-muted-foreground">API-equivalent pricing</p>
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+            <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
               <Coins className="h-4 w-4" />
               Total Tokens
             </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold">{formatTokens(totalTokens)}</div>
-            <p className="text-xs text-muted-foreground mt-1">
+            <p className="mt-1 text-xs text-muted-foreground">
               across {costs.length} session{costs.length !== 1 ? "s" : ""}
             </p>
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+            <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
               <Zap className="h-4 w-4" />
               Avg. per Session
             </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold">
-              {costs.length > 0
-                ? formatCost(grandTotal / costs.length)
-                : "$0.00"}
+              {costs.length > 0 ? formatCost(grandTotal / costs.length) : "$0.00"}
             </div>
           </CardContent>
         </Card>
       </div>
 
-      {/* Per-session breakdown */}
       {(costLoading || loading) && costs.length === 0 && (
-        <p className="text-sm text-muted-foreground text-center py-8 animate-pulse">
+        <p className="py-8 text-center text-sm text-muted-foreground animate-pulse">
           Loading cost data from transcripts...
         </p>
       )}
 
       {costs.length === 0 && !costLoading && !loading && (
-        <p className="text-sm text-muted-foreground text-center py-8">
+        <p className="py-8 text-center text-sm text-muted-foreground">
           No transcript data available yet. Cost data appears after sessions end.
         </p>
       )}
@@ -245,109 +175,49 @@ export function CostPanel() {
         <Card key={cost.session_id}>
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
-              <CardTitle className="text-sm font-mono flex items-center gap-2">
-                {cost.session_id.slice(0, 8)}
+              <CardTitle className="flex items-center gap-2 text-sm font-mono">
+                {formatSessionId(cost.session_id)}
                 <Badge variant="outline" className="text-[10px]">
                   {cost.model}
                 </Badge>
               </CardTitle>
-              <span className="text-lg font-bold">
-                {formatCost(cost.cost_usd)}
-              </span>
+              <span className="text-lg font-bold">{formatCost(cost.cost_usd)}</span>
             </div>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-2 gap-3 text-sm lg:grid-cols-4">
-              <div>
-                <span className="text-muted-foreground block text-xs mb-1">
+              <div className="rounded-md bg-muted/50 p-3">
+                <div className="mb-1 flex items-center gap-1 text-xs text-muted-foreground">
+                  <Coins className="h-3 w-3" />
                   Input
-                </span>
-                <span className="font-medium">
-                  {formatTokens(cost.input_tokens)}
-                </span>
+                </div>
+                <div className="font-semibold">{formatTokens(cost.input_tokens)}</div>
               </div>
-              <div>
-                <span className="text-muted-foreground block text-xs mb-1">
+              <div className="rounded-md bg-muted/50 p-3">
+                <div className="mb-1 flex items-center gap-1 text-xs text-muted-foreground">
+                  <Zap className="h-3 w-3" />
                   Output
-                </span>
-                <span className="font-medium">
-                  {formatTokens(cost.output_tokens)}
-                </span>
-              </div>
-              <div className="flex items-start gap-1">
-                <Database className="h-3 w-3 text-muted-foreground mt-0.5" />
-                <div>
-                  <span className="text-muted-foreground block text-xs mb-1">
-                    Cache Read
-                  </span>
-                  <span className="font-medium">
-                    {formatTokens(cost.cache_read_input_tokens)}
-                  </span>
                 </div>
+                <div className="font-semibold">{formatTokens(cost.output_tokens)}</div>
               </div>
-              <div className="flex items-start gap-1">
-                <Database className="h-3 w-3 text-muted-foreground mt-0.5" />
-                <div>
-                  <span className="text-muted-foreground block text-xs mb-1">
-                    Cache Created
-                  </span>
-                  <span className="font-medium">
-                    {formatTokens(cost.cache_creation_input_tokens)}
-                  </span>
+              <div className="rounded-md bg-muted/50 p-3">
+                <div className="mb-1 flex items-center gap-1 text-xs text-muted-foreground">
+                  <Database className="h-3 w-3" />
+                  Cache Read
                 </div>
+                <div className="font-semibold">{formatTokens(cost.cache_read_input_tokens)}</div>
+              </div>
+              <div className="rounded-md bg-muted/50 p-3">
+                <div className="mb-1 flex items-center gap-1 text-xs text-muted-foreground">
+                  <Database className="h-3 w-3" />
+                  Cache Write
+                </div>
+                <div className="font-semibold">{formatTokens(cost.cache_creation_input_tokens)}</div>
               </div>
             </div>
-
-            {/* Token distribution bar */}
-            <div className="mt-4">
-              <div className="flex h-2 rounded-full overflow-hidden bg-muted">
-                {cost.total_tokens > 0 && (
-                  <>
-                    <div
-                      className="bg-blue-500"
-                      style={{
-                        width: `${(cost.input_tokens / cost.total_tokens) * 100}%`,
-                      }}
-                      title={`Input: ${formatTokens(cost.input_tokens)}`}
-                    />
-                    <div
-                      className="bg-green-500"
-                      style={{
-                        width: `${(cost.output_tokens / cost.total_tokens) * 100}%`,
-                      }}
-                      title={`Output: ${formatTokens(cost.output_tokens)}`}
-                    />
-                    <div
-                      className="bg-purple-400"
-                      style={{
-                        width: `${(cost.cache_read_input_tokens / cost.total_tokens) * 100}%`,
-                      }}
-                      title={`Cache Read: ${formatTokens(cost.cache_read_input_tokens)}`}
-                    />
-                    <div
-                      className="bg-orange-400"
-                      style={{
-                        width: `${(cost.cache_creation_input_tokens / cost.total_tokens) * 100}%`,
-                      }}
-                      title={`Cache Created: ${formatTokens(cost.cache_creation_input_tokens)}`}
-                    />
-                  </>
-                )}
-              </div>
-              <div className="flex gap-4 mt-1.5 text-[10px] text-muted-foreground">
-                <span className="flex items-center gap-1">
-                  <span className="h-2 w-2 rounded-full bg-blue-500" /> Input
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="h-2 w-2 rounded-full bg-green-500" /> Output
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className={cn("h-2 w-2 rounded-full bg-purple-400")} /> Cache Read
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="h-2 w-2 rounded-full bg-orange-400" /> Cache Created
-                </span>
-              </div>
+            <div className="mt-4 flex items-center justify-between border-t pt-3 text-sm">
+              <span className="text-muted-foreground">Total tokens</span>
+              <span className="font-semibold">{formatTokens(cost.total_tokens)}</span>
             </div>
           </CardContent>
         </Card>
