@@ -86,6 +86,21 @@ describe("session verification", () => {
     expect(report.commands[0]!.command).toBe("ls -la");
   });
 
+  it("extracts exec_command commands from Codex sessions", () => {
+    const events = [
+      makeEvent({
+        hook_event_type: "PostToolUse",
+        tool_name: "exec_command",
+        tool_input: { cmd: "npm test" },
+      }),
+    ];
+
+    const report = verifySession(events, "session-1");
+    expect(report.summary.commands_run).toBe(1);
+    expect(report.summary.tests_run).toBe(1);
+    expect(report.commands[0]!.command).toBe("npm test");
+  });
+
   it("identifies test commands", () => {
     const events = [
       makeEvent({
@@ -166,6 +181,31 @@ describe("session verification", () => {
     const report = verifySession(events, "session-1");
     expect(report.summary.files_edited).toBe(2); // 2 edit events
     expect(report.files_modified).toHaveLength(1); // but 1 unique file
+  });
+
+  it("extracts changed files from apply_patch events", () => {
+    const events = [
+      makeEvent({
+        hook_event_type: "PostToolUse",
+        tool_name: "apply_patch",
+        tool_input: {
+          patch: `*** Begin Patch
+*** Update File: /src/main.ts
+@@
+-old
++new
+*** Add File: /src/new-file.ts
++hello
+*** End Patch`,
+        },
+      }),
+    ];
+
+    const report = verifySession(events, "session-1");
+    expect(report.summary.files_edited).toBe(1);
+    expect(report.summary.files_written).toBe(1);
+    expect(report.files_modified).toContain("/src/main.ts");
+    expect(report.files_modified).toContain("/src/new-file.ts");
   });
 
   it("calculates duration", () => {

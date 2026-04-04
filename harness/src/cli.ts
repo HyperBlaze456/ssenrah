@@ -14,9 +14,10 @@
  *   ssenrah tasks                Task lifecycle summary
  *   ssenrah tail                 Follow new events in real-time
  */
-import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { detectAnomalies, formatAnomalies } from "./anomaly.js";
+import { loadCodexEvents } from "./codex.js";
 import { calculateSessionCost, formatCost, formatTokens } from "./cost.js";
 import { extractDecisionChain, formatDecisionChain } from "./reasoning.js";
 import {
@@ -63,17 +64,24 @@ interface SessionSummary {
 }
 
 function loadEvents(): AgentEvent[] {
-  if (!existsSync(LOG_FILE)) return [];
-  const lines = readFileSync(LOG_FILE, "utf-8").split("\n").filter(Boolean);
   const events: AgentEvent[] = [];
-  for (const line of lines) {
-    try {
-      events.push(JSON.parse(line) as AgentEvent);
-    } catch {
-      // Skip malformed lines
+
+  if (existsSync(LOG_FILE)) {
+    const lines = readFileSync(LOG_FILE, "utf-8").split("\n").filter(Boolean);
+    for (const line of lines) {
+      try {
+        events.push(JSON.parse(line) as AgentEvent);
+      } catch {
+        // Skip malformed lines
+      }
     }
   }
-  return events;
+
+  events.push(...loadCodexEvents());
+  return events.sort((left, right) => {
+    const timestampCompare = left.timestamp.localeCompare(right.timestamp);
+    return timestampCompare !== 0 ? timestampCompare : left.id.localeCompare(right.id);
+  });
 }
 
 function formatTimestamp(iso: string): string {
@@ -197,7 +205,7 @@ function summarizeSessions(events: AgentEvent[]): SessionSummary[] {
 function cmdSummary(): void {
   const events = loadEvents();
   if (events.length === 0) {
-    console.log("No events recorded yet. Run Claude Code with ssenrah hooks installed.");
+    console.log("No events recorded yet. Run Claude Code with ssenrah hooks installed or use Codex with local logs enabled.");
     return;
   }
 
@@ -287,37 +295,18 @@ function cmdSessions(): void {
 }
 
 function cmdTail(): void {
-  if (!existsSync(LOG_FILE)) {
-    console.log("No log file yet. Waiting for events...\n");
-  }
-
   console.log("Tailing events (Ctrl+C to stop):\n");
-  let lastSize = existsSync(LOG_FILE) ? statSync(LOG_FILE).size : 0;
+  const seenEventIds = new Set(loadEvents().map((event) => event.id));
 
   setInterval(() => {
-    if (!existsSync(LOG_FILE)) return;
-    const currentSize = statSync(LOG_FILE).size;
-    if (currentSize <= lastSize) return;
-
-    const fd = openSync(LOG_FILE, "r");
-    const buffer = Buffer.alloc(currentSize - lastSize);
-    readSync(fd, buffer, 0, buffer.length, lastSize);
-    closeSync(fd);
-
-    const newLines = buffer.toString("utf-8").split("\n").filter(Boolean);
-    for (const line of newLines) {
-      try {
-        const event = JSON.parse(line) as AgentEvent;
-        const time = formatTimestamp(event.timestamp);
-        const type = event.hook_event_type.padEnd(20);
-        const detail = event.tool_name ?? event.agent_type ?? event.notification_type ?? "";
-        console.log(`  ${time}  ${type}  ${detail}`);
-      } catch {
-        // Skip malformed tail lines.
-      }
+    const newEvents = loadEvents().filter((event) => !seenEventIds.has(event.id));
+    for (const event of newEvents) {
+      const time = formatTimestamp(event.timestamp);
+      const type = event.hook_event_type.padEnd(20);
+      const detail = event.tool_name ?? event.agent_type ?? event.notification_type ?? "";
+      console.log(`  ${time}  ${type}  ${detail}`);
+      seenEventIds.add(event.id);
     }
-
-    lastSize = currentSize;
   }, 500);
 }
 

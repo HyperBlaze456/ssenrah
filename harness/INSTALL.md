@@ -1,6 +1,9 @@
 # ssenrah harness — Installation Guide
 
-Agent transparency layer for Claude Code. Captures every hook event to a local JSONL log with automatic secret redaction.
+Agent transparency layer for Claude Code and Codex.
+
+- **Claude Code** is captured through hooks into a local JSONL log with automatic secret redaction.
+- **Codex** is auto-ingested from the local `~/.codex` runtime state and log databases. No extra hook installation is required.
 
 ## Prerequisites
 
@@ -18,7 +21,7 @@ This will:
 2. Add async hooks to your `~/.claude/settings.json` for 10 event types
 3. Preserve any existing hooks you already have
 
-**That's it.** Start a Claude Code session and events will begin logging.
+**That's it.** Start a Claude Code session and events will begin logging. Codex sessions are auto-detected from `~/.codex/`.
 
 ## Uninstall
 
@@ -30,7 +33,7 @@ Removes ssenrah hooks from settings. Event logs at `~/.ssenrah/` are preserved.
 
 ## Verify It Works
 
-After running any Claude Code session:
+After running any Claude Code or Codex session:
 
 ```bash
 # Check if events are being captured
@@ -77,9 +80,19 @@ Override with the `SSENRAH_LOG_DIR` environment variable:
 SSENRAH_LOG_DIR=/custom/path npx tsx harness/src/cli.ts summary
 ```
 
+Codex ingestion can be configured with:
+
+```bash
+# Point at a non-default Codex home
+SSENRAH_CODEX_DIR=/custom/.codex npx tsx harness/src/cli.ts summary
+
+# Disable Codex ingestion entirely
+SSENRAH_INCLUDE_CODEX=0 npx tsx harness/src/cli.ts summary
+```
+
 ## What Gets Captured
 
-Current Claude Code hook event types, including:
+Current Claude Code hook event types are captured directly, and Codex sessions are normalized into the same event schema:
 
 - **Session lifecycle**: start, end
 - **Tool usage**: pre/post tool use, failures
@@ -90,11 +103,13 @@ Current Claude Code hook event types, including:
 - **Filesystem/worktree**: cwd, file, and worktree changes
 - **Elicitation**: request/result interactions
 
-Each event includes: timestamp, session ID, event type, tool name, agent ID, and all fields the hook provides. The full raw payload is preserved in the `_raw` field for forward compatibility.
+Each event includes: timestamp, session ID, event type, tool name, agent ID, and all fields the source provides. The full raw payload is preserved in the `_raw` field for forward compatibility.
 
 ## Cost Tracking
 
 Session cost is calculated from Claude Code transcript files (token usage per API call). The `cost` command reads transcripts directly and applies model-specific pricing.
+
+Codex sessions currently contribute timeline, task, agent, anomaly, and verification data, but not transcript-derived cost or reasoning yet.
 
 Supported models: Claude Opus 4.6, Sonnet 4.6, Haiku 4.5. Unknown models fall back to Sonnet pricing.
 
@@ -144,4 +159,4 @@ cd harness/
 npm test
 ```
 
-96 tests across 8 test files: redaction, hook handler, CLI, cost tracking, escalation, reasoning extraction, anomaly detection, and session verification.
+100 tests across 9 test files: redaction, hook handler, Codex ingestion, CLI, cost tracking, escalation, reasoning extraction, anomaly detection, and session verification.

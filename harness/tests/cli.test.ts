@@ -12,7 +12,7 @@ let testLogDir: string;
 
 function runCli(args: string): string {
   return execSync(`npx tsx "${CLI_SCRIPT}" ${args}`, {
-    env: { ...process.env, SSENRAH_LOG_DIR: testLogDir },
+    env: { ...process.env, SSENRAH_LOG_DIR: testLogDir, SSENRAH_INCLUDE_CODEX: "0" },
     cwd: HARNESS_DIR,
     encoding: "utf-8",
     timeout: 30000,

@@ -71,6 +71,27 @@ function isTestCommand(command: string): boolean {
   return TEST_PATTERNS.some((p) => p.test(command));
 }
 
+function extractPatchFilePaths(patch: string): Array<{ file_path: string; action: FileChange["action"] }> {
+  const changes: Array<{ file_path: string; action: FileChange["action"] }> = [];
+  const lines = patch.split("\n");
+
+  for (const line of lines) {
+    const addMatch = line.match(/^\*\*\* Add File: (.+)$/);
+    if (addMatch) {
+      changes.push({ file_path: addMatch[1]!, action: "write" });
+      continue;
+    }
+
+    const updateMatch = line.match(/^\*\*\* Update File: (.+)$/);
+    if (updateMatch) {
+      changes.push({ file_path: updateMatch[1]!, action: "edit" });
+      continue;
+    }
+  }
+
+  return changes;
+}
+
 /**
  * Extract file changes from tool events.
  */
@@ -81,6 +102,18 @@ function extractFileChanges(events: AgentEvent[]): FileChange[] {
     if (e.hook_event_type !== "PostToolUse" || !e.tool_name) continue;
 
     const input = e.tool_input ?? {};
+    if (e.tool_name === "apply_patch") {
+      const patch = typeof input.patch === "string" ? input.patch : "";
+      for (const change of extractPatchFilePaths(patch)) {
+        changes.push({
+          ...change,
+          timestamp: e.timestamp,
+          tool_use_id: e.tool_use_id,
+        });
+      }
+      continue;
+    }
+
     const filePath =
       (input.file_path as string) ??
       (input.path as string) ??
@@ -125,12 +158,12 @@ function extractCommands(events: AgentEvent[]): CommandExecution[] {
     (e) =>
       (e.hook_event_type === "PostToolUse" ||
         e.hook_event_type === "PostToolUseFailure") &&
-      e.tool_name === "Bash"
+      (e.tool_name === "Bash" || e.tool_name === "exec_command")
   );
 
   for (const e of bashEvents) {
     const input = e.tool_input ?? {};
-    const command = (input.command as string) ?? "";
+    const command = (input.command as string) ?? (input.cmd as string) ?? "";
     if (!command) continue;
 
     commands.push({

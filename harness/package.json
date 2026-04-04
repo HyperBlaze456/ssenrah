@@ -1,7 +1,7 @@
 {
   "name": "@ssenrah/harness",
   "version": "0.1.0",
-  "description": "Agent transparency layer — event capture, redaction, and CLI for Claude Code hooks",
+  "description": "Agent transparency layer — Claude Code hook capture plus Codex session tracing",
   "type": "module",
   "main": "dist/index.js",
   "bin": {

@@ -162,6 +162,8 @@ export interface RunTrace {
   root_run_id: string;
   started_at: string;
   ended_at: string;
+  first_event: string;
+  last_event: string;
   duration_seconds: number;
   cost_usd: number;
   event_count: number;
@@ -1008,7 +1010,7 @@ export function derivePromptSlices(events: AgentEvent[], sessionId: string): Pro
       .filter((candidate) => !nextPrompt || candidate.timestamp < nextPrompt.timestamp)
       .map((candidate) => candidate.id);
     return {
-      id: `prompt:${event.id}`,
+      id: event.prompt_segment_id ?? `prompt:${event.id}`,
       session_id: sessionId,
       label: truncateText(event.prompt ?? event.message ?? "Prompt", 48) ?? "Prompt",
       prompt: (event.prompt ?? event.message ?? "Prompt").trim() || "Prompt",
@@ -1234,8 +1236,13 @@ function expandedBranchNode(actor: ActorContext, promptSlices: PromptSlice[]): R
 
 export function deriveRunTrace(
   events: AgentEvent[],
-  options: { session?: string; promptSliceId?: string } = {},
+  sessionOrOptions: string | { session?: string; promptSliceId?: string } = {},
+  legacyOptions: { promptSliceId?: string } = {},
 ): RunTrace | null {
+  const options =
+    typeof sessionOrOptions === "string"
+      ? { session: sessionOrOptions, ...legacyOptions }
+      : sessionOrOptions;
   const sorted = [...events].sort((left, right) => left.timestamp.localeCompare(right.timestamp));
   const sessionId = options.session ?? sorted[sorted.length - 1]?.session_id;
   if (!sessionId) return null;
@@ -1252,24 +1259,19 @@ export function deriveRunTrace(
       : sessionEvents;
   if (filteredEvents.length === 0) return null;
 
-  const relevantPromptSlices =
-    options.promptSliceId
-      ? promptSlices.filter((slice) => slice.id === options.promptSliceId)
-      : promptSlices;
-
   const actorContexts = buildActorContexts(filteredEvents);
   const mainActor = actorContexts.find((actor) => actor.actor_kind === "main");
   if (!mainActor) return null;
 
-  const mainNodes = buildLaneNodes(mainActor, relevantPromptSlices);
+  const mainNodes = buildLaneNodes(mainActor, promptSlices);
   const lanes: RunTraceLane[] = [];
   const branchActors = actorContexts.filter((actor) => actor.actor_id !== mainActor.actor_id);
 
   for (const actor of branchActors) {
     if (actor.expanded) {
-      const branchNode = expandedBranchNode(actor, relevantPromptSlices);
+      const branchNode = expandedBranchNode(actor, promptSlices);
       mainNodes.push(branchNode);
-      const laneNodes = buildLaneNodes(actor, relevantPromptSlices);
+      const laneNodes = buildLaneNodes(actor, promptSlices);
       lanes.push({
         id: actor.lane_id,
         actor_id: actor.actor_id,
@@ -1287,7 +1289,24 @@ export function deriveRunTrace(
         nodes: laneNodes,
       });
     } else {
-      mainNodes.push(collapsedBranchNode(actor, relevantPromptSlices));
+      const collapsedNode = collapsedBranchNode(actor, promptSlices);
+      mainNodes.push(collapsedNode);
+      lanes.push({
+        id: actor.lane_id,
+        actor_id: actor.actor_id,
+        actor_label: actor.actor_label,
+        actor_kind: actor.actor_kind,
+        branch_kind: actor.branch_kind,
+        parent_lane_id: "lane:main",
+        parent_node_id: collapsedNode.id,
+        expanded: false,
+        started_at: actor.started_at,
+        ended_at: actor.ended_at,
+        duration_ms: actor.duration_ms,
+        event_count: actor.events.length,
+        node_count: 0,
+        nodes: [],
+      });
     }
   }
 
@@ -1316,6 +1335,8 @@ export function deriveRunTrace(
     root_run_id: filteredEvents[0]!.root_run_id ?? sessionId,
     started_at: filteredEvents[0]!.timestamp,
     ended_at: filteredEvents[filteredEvents.length - 1]!.timestamp,
+    first_event: filteredEvents[0]!.timestamp,
+    last_event: filteredEvents[filteredEvents.length - 1]!.timestamp,
     duration_seconds: Math.max(
       0,
       Math.round(
@@ -1330,7 +1351,7 @@ export function deriveRunTrace(
     branch_count: branchActors.length,
     expanded_branch_count: branchActors.filter((actor) => actor.expanded).length,
     collapsed_branch_count: branchActors.filter((actor) => !actor.expanded).length,
-    prompt_slices: relevantPromptSlices,
+    prompt_slices: promptSlices,
     prompt_slice_id: options.promptSliceId,
     lanes,
     nodes: lanes.flatMap((lane) => lane.nodes),
@@ -1433,7 +1454,10 @@ export function formatTaskSummaries(tasks: TaskSummary[]): string {
 }
 
 export function formatRunTraceSummary(runTrace: RunTrace): string {
-  const shortSession = `${runTrace.session_id.slice(0, 8)}…${runTrace.session_id.slice(-4)}`;
+  const shortSession =
+    runTrace.session_id.length <= 20
+      ? runTrace.session_id
+      : `${runTrace.session_id.slice(0, 8)}…${runTrace.session_id.slice(-4)}`;
   const lines = [
     `Run trace for ${shortSession}`,
     `Window: ${runTrace.started_at} → ${runTrace.ended_at} (${runTrace.duration_seconds}s)`,
@@ -1462,3 +1486,5 @@ export function formatRunTraceSummary(runTrace: RunTrace): string {
 
   return lines.join("\n");
 }
+
+export const formatRunTrace = formatRunTraceSummary;
