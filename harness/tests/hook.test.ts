@@ -155,10 +155,12 @@ describe("hook handler", () => {
 
     const events = readEvents();
     const event = events[0]!;
-    expect(event.schema_version).toBe(2);
+    expect(event.schema_version).toBe(3);
     expect(event.transcript_path).toBe("/tmp/main-transcript.jsonl");
     expect(event.agent_transcript_path).toBe("/tmp/subagent-transcript.jsonl");
     expect(event.worktree_path).toBe("/repo/.worktrees/research");
+    expect(event.root_run_id).toBe("session-telemetry");
+    expect(event.branch_kind).toBe("subagent");
     expect((event.extras as Record<string, unknown>).custom_extra_field).toBe("keep-me");
   }, 30000);
 
@@ -188,5 +190,25 @@ describe("hook handler", () => {
     expect(event.old_cwd).toBe("/repo");
     expect(event.new_cwd).toBe("/repo/subdir");
     expect(event.content).toEqual({ approved: true });
+  }, 30000);
+
+  it("derives tool significance metadata for inspection-heavy subagents", () => {
+    runHookWithStdin(
+      JSON.stringify({
+        session_id: "session-telemetry",
+        transcript_path: "/tmp/main-transcript.jsonl",
+        cwd: "/repo",
+        hook_event_name: "PostToolUse",
+        tool_name: "Read",
+        tool_input: { file_path: "/repo/README.md" },
+        agent_id: "agent_helper",
+        agent_type: "Explore",
+      }),
+    );
+
+    const event = readEvents()[0]!;
+    expect(event.tool_category).toBe("inspection");
+    expect(event.effect_level).toBe("inspection_only");
+    expect(event.collapsed_by_default).toBe(true);
   }, 30000);
 });

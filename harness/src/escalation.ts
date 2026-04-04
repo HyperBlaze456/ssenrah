@@ -14,6 +14,7 @@ import {
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { EscalationRule, EscalationConfig, AgentEvent } from "./types.js";
+import { getAuthoritativeSessionCost } from "./telemetry.js";
 
 function getLogDir(): string {
   return (
@@ -134,11 +135,7 @@ export function computeSessionState(
       e.hook_event_type === "StopFailure"
   ).length;
 
-  // Sum cost from any events that have cost_usd (added by hook on Stop/SessionEnd)
-  const totalCost = sessionEvents.reduce(
-    (sum, e) => sum + (e.cost_usd ?? 0),
-    0
-  );
+  const totalCost = getAuthoritativeSessionCost(sessionEvents, sessionId);
 
   return {
     session_id: sessionId,

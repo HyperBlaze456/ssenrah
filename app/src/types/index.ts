@@ -12,7 +12,7 @@ export type PanelId =
   | "permissions" | "hooks" | "mcp" | "memory" | "agents"
   | "skills" | "plugins" | "sandbox" | "env" | "display"
   | "advanced" | "effective"
-  | "activity" | "sessions" | "cost" | "alerts"
+  | "activity" | "sessions" | "run_trace" | "cost" | "alerts"
   | "reasoning" | "anomalies" | "verify";
 
 // Load status
@@ -191,6 +191,26 @@ export interface Settings {
 // ── Monitor types ──────────────────────────────────────
 // Matches harness/src/types.ts AgentEvent
 
+export type ToolCategory =
+  | "inspection"
+  | "filesystem"
+  | "command"
+  | "network"
+  | "mcp"
+  | "coordination"
+  | "approval"
+  | "other";
+
+export type EffectLevel =
+  | "inspection_only"
+  | "reasoning_or_coordination"
+  | "significant_side_effect"
+  | "safety_or_policy"
+  | "failure_or_anomaly";
+
+export type BranchKind = "main" | "subagent" | "teammate" | "team" | "system";
+export type RunOutcome = "active" | "completed" | "failed" | "cancelled";
+
 export interface AgentEvent {
   id: string;
   schema_version?: number;
@@ -208,9 +228,21 @@ export interface AgentEvent {
   agent_id?: string;
   agent_type?: string;
   model?: string;
+  root_run_id?: string;
+  parent_run_id?: string;
+  spawn_parent_agent_id?: string;
+  spawn_parent_event_id?: string;
+  branch_kind?: BranchKind;
   task_id?: string;
   task_subject?: string;
   task_description?: string;
+  prompt_segment_id?: string;
+  duration_ms?: number;
+  outcome?: RunOutcome;
+  failure_class?: string;
+  tool_category?: ToolCategory;
+  effect_level?: EffectLevel;
+  collapsed_by_default?: boolean;
   teammate_name?: string;
   team_name?: string;
   notification_type?: string;
@@ -301,6 +333,7 @@ export const PANELS: PanelMeta[] = [
 export const MONITOR_PANELS: PanelMeta[] = [
   { id: "activity", label: "Activity", icon: "Activity", scopes: [] },
   { id: "sessions", label: "Sessions", icon: "Clock", scopes: [] },
+  { id: "run_trace", label: "Run Trace", icon: "GitBranch", scopes: [] },
   { id: "cost", label: "Cost", icon: "DollarSign", scopes: [] },
   { id: "alerts", label: "Alerts", icon: "AlertTriangle", scopes: [] },
   { id: "reasoning", label: "Reasoning", icon: "Brain", scopes: [] },

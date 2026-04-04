@@ -3,6 +3,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import { readTextFile, exists } from "@tauri-apps/plugin-fs";
 import { homeDir, join } from "@tauri-apps/api/path";
 import type { AgentEvent, EventSummary, SessionSummary } from "@/types";
+import { getAuthoritativeSessionCost, getAuthoritativeTotalCost } from "@/lib/telemetry";
 
 interface MonitorStore {
   events: AgentEvent[];
@@ -80,7 +81,7 @@ export function computeSummary(events: AgentEvent[]): EventSummary {
     (event) => event.hook_event_type === "SubagentStart",
   );
   const tasks = events.filter((event) => event.hook_event_type === "TaskCompleted");
-  const totalCost = events.reduce((sum, event) => sum + (event.cost_usd ?? 0), 0);
+  const totalCost = getAuthoritativeTotalCost(events);
 
   const toolCounts = new Map<string, number>();
   for (const event of toolUses) {
@@ -150,7 +151,7 @@ export function computeSessions(events: AgentEvent[]): SessionSummary[] {
       subagents: grouped.events.filter(
         (event) => event.hook_event_type === "SubagentStart",
       ).length,
-      cost_usd: grouped.events.reduce((sum, event) => sum + (event.cost_usd ?? 0), 0),
+      cost_usd: getAuthoritativeSessionCost(grouped.events),
       top_tools: [...grouped.tools.entries()]
         .sort((a, b) => b[1] - a[1])
         .slice(0, 5),

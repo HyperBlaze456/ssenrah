@@ -5,6 +5,7 @@
  * sums token usage from assistant messages, and applies model-specific pricing.
  */
 import { readFileSync, existsSync } from "node:fs";
+import type { AgentEvent } from "./types.js";
 
 /** Token usage breakdown for a single API call. */
 export interface TokenUsage {
@@ -164,6 +165,23 @@ export function calculateSessionCost(
     total_tokens,
     cost_usd: Math.round(cost_usd * 10000) / 10000, // 4 decimal places
   };
+}
+
+export function getAuthoritativeSessionCost(events: AgentEvent[], sessionId: string): number {
+  const costEvents = events
+    .filter((event) => event.session_id === sessionId && typeof event.cost_usd === "number")
+    .sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+
+  if (costEvents.length === 0) return 0;
+  return costEvents[costEvents.length - 1]!.cost_usd ?? 0;
+}
+
+export function getAuthoritativeTotalCost(events: AgentEvent[]): number {
+  const sessionIds = [...new Set(events.map((event) => event.session_id))];
+  return sessionIds.reduce(
+    (sum, sessionId) => sum + getAuthoritativeSessionCost(events, sessionId),
+    0,
+  );
 }
 
 /**

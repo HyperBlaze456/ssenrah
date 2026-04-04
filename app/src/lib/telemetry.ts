@@ -1208,3 +1208,735 @@ export async function readSessionCost(
     return null;
   }
 }
+
+export type RunTraceCategory =
+  | "inspection_only"
+  | "reasoning_or_coordination"
+  | "significant_side_effect"
+  | "safety_or_policy"
+  | "failure_or_anomaly";
+
+export type RunTraceNodeKind =
+  | "session"
+  | "prompt"
+  | "task"
+  | "tool"
+  | "agent"
+  | "inspection_block"
+  | "policy"
+  | "failure"
+  | "event";
+
+export type RunTraceLaneKind = "main" | "subagent" | "teammate";
+
+export interface PromptSlice {
+  id: string;
+  label: string;
+  prompt: string;
+  start_timestamp: string;
+  end_timestamp?: string;
+  event_count: number;
+}
+
+export interface RunTraceNode {
+  id: string;
+  lane_id: string;
+  actor_id: string;
+  prompt_slice_id?: string;
+  kind: RunTraceNodeKind;
+  category: RunTraceCategory;
+  title: string;
+  subtitle?: string;
+  status: FlowStatus;
+  start_timestamp: string;
+  end_timestamp: string;
+  duration_ms: number;
+  collapsed_by_default: boolean;
+  event_ids: string[];
+  tool_names: string[];
+  task_ids: string[];
+  transcript_paths: string[];
+}
+
+export interface RunTraceLane {
+  id: string;
+  actor_id: string;
+  label: string;
+  kind: RunTraceLaneKind;
+  parent_lane_id?: string;
+  branch_summary_node_id?: string;
+  collapsed_by_default: boolean;
+  event_count: number;
+  inspection_event_count: number;
+  significant_event_count: number;
+  failure_count: number;
+  start_timestamp: string;
+  end_timestamp: string;
+  duration_ms: number;
+  nodes: RunTraceNode[];
+}
+
+export interface RunTraceSummary {
+  session_id: string;
+  first_timestamp: string;
+  last_timestamp: string;
+  duration_seconds: number;
+  total_cost_usd: number;
+  prompt_count: number;
+  branch_count: number;
+  expanded_branch_count: number;
+  collapsed_helper_count: number;
+  subagent_count: number;
+  teammate_count: number;
+  top_tools: [string, number][];
+  models_used: string[];
+  severity: TelemetrySeverity;
+}
+
+export interface RunTraceModel {
+  session_id: string;
+  summary: RunTraceSummary;
+  prompt_slices: PromptSlice[];
+  selected_prompt_slice_id?: string;
+  lanes: RunTraceLane[];
+  raw_events: AgentEvent[];
+}
+
+export interface RunTraceInspectorAction {
+  event_id: string;
+  timestamp: string;
+  severity: TelemetrySeverity;
+  label: string;
+  detail?: string;
+  tool_name?: string;
+}
+
+export interface RunTraceInspector {
+  lane: RunTraceLane;
+  node: RunTraceNode;
+  prompt_slice?: PromptSlice;
+  transcript_path?: string;
+  models_used: string[];
+  ownership: {
+    actor_label: string;
+    actor_kind: RunTraceLaneKind;
+    parent_lane_id?: string;
+    task_ids: string[];
+  };
+  significant_actions: RunTraceInspectorAction[];
+  inspection_actions: RunTraceInspectorAction[];
+  raw_records: TelemetryRecord[];
+}
+
+const INSPECTION_TOOLS = new Set([
+  "Read",
+  "Grep",
+  "Glob",
+  "LS",
+  "Find",
+  "Search",
+  "SearchFiles",
+]);
+
+const TERMINAL_COST_EVENTS = new Set(["Stop", "SessionEnd"]);
+const POLICY_EVENT_TYPES = new Set(["PermissionRequest", "Elicitation", "ElicitationResult", "_escalation"]);
+const FAILURE_EVENT_TYPES = new Set(["PostToolUseFailure", "StopFailure", "_anomaly", "_parse_error"]);
+function toTimestampMs(timestamp: string): number {
+  return new Date(timestamp).getTime();
+}
+
+function getEventTimelineBounds(events: AgentEvent[]): { start: string; end: string } | null {
+  if (events.length === 0) return null;
+  const sorted = [...events].sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+  return {
+    start: sorted[0]!.timestamp,
+    end: sorted[sorted.length - 1]!.timestamp,
+  };
+}
+
+function getEventDurationMs(events: AgentEvent[]): number {
+  const bounds = getEventTimelineBounds(events);
+  if (!bounds) return 0;
+  return Math.max(0, toTimestampMs(bounds.end) - toTimestampMs(bounds.start));
+}
+
+function uniqueStrings(values: Array<string | undefined>): string[] {
+  return [...new Set(values.filter((value): value is string => Boolean(value)))];
+}
+
+function isInspectionTool(toolName: string | undefined): boolean {
+  return Boolean(toolName && INSPECTION_TOOLS.has(toolName));
+}
+
+function getToolCategory(event: AgentEvent): string {
+  if (event.tool_category) return event.tool_category;
+  if (!event.tool_name) return "event";
+  if (isInspectionTool(event.tool_name)) return "inspection";
+  if (event.tool_name === "Bash") return "command";
+  if (["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(event.tool_name)) return "mutation";
+  return "significant";
+}
+
+function getRunTraceCategory(event: AgentEvent): RunTraceCategory {
+  if (event.failure_class || FAILURE_EVENT_TYPES.has(event.hook_event_type)) {
+    return "failure_or_anomaly";
+  }
+  if (POLICY_EVENT_TYPES.has(event.hook_event_type)) {
+    return "safety_or_policy";
+  }
+  if (event.hook_event_type === "PostToolUse" && isInspectionTool(event.tool_name)) {
+    return "inspection_only";
+  }
+  if (
+    event.hook_event_type === "PostToolUse" ||
+    event.hook_event_type === "FileChanged" ||
+    event.hook_event_type === "WorktreeCreate" ||
+    event.hook_event_type === "WorktreeRemove"
+  ) {
+    return getToolCategory(event) === "inspection"
+      ? "inspection_only"
+      : "significant_side_effect";
+  }
+  return "reasoning_or_coordination";
+}
+
+function isInspectionOnlyEvent(event: AgentEvent): boolean {
+  return getRunTraceCategory(event) === "inspection_only";
+}
+
+function getNodeKind(event: AgentEvent): RunTraceNodeKind {
+  switch (event.hook_event_type) {
+    case "SessionStart":
+    case "SessionEnd":
+    case "Stop":
+      return "session";
+    case "UserPromptSubmit":
+      return "prompt";
+    case "TaskCreated":
+    case "TaskCompleted":
+      return "task";
+    case "SubagentStart":
+    case "SubagentStop":
+      return "agent";
+    case "PermissionRequest":
+    case "Elicitation":
+    case "ElicitationResult":
+    case "_escalation":
+      return "policy";
+    case "PostToolUseFailure":
+    case "StopFailure":
+    case "_anomaly":
+    case "_parse_error":
+      return "failure";
+    case "PostToolUse":
+      return "tool";
+    default:
+      return "event";
+  }
+}
+
+function getNodeStatus(event: AgentEvent): FlowStatus {
+  if (FAILURE_EVENT_TYPES.has(event.hook_event_type) || event.error) return "failed";
+  if (event.hook_event_type === "TaskCompleted" || event.hook_event_type === "SubagentStop") {
+    return "completed";
+  }
+  return "active";
+}
+
+function getPromptSlicesForSession(events: AgentEvent[], sessionId: string): PromptSlice[] {
+  const sessionEvents = [...events]
+    .filter((event) => event.session_id === sessionId)
+    .sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+
+  const promptEvents = sessionEvents.filter(
+    (event) => event.hook_event_type === "UserPromptSubmit" && (event.prompt ?? event.message),
+  );
+
+  return promptEvents.map((event, index) => {
+    const nextPrompt = promptEvents[index + 1];
+    const startTimestamp = event.timestamp;
+    const endTimestamp = nextPrompt?.timestamp;
+    const eventCount = sessionEvents.filter((candidate) => {
+      if (candidate.timestamp < startTimestamp) return false;
+      if (endTimestamp && candidate.timestamp >= endTimestamp) return false;
+      return true;
+    }).length;
+
+    return {
+      id: event.prompt_segment_id ?? event.id ?? `${sessionId}:prompt:${index + 1}`,
+      label: `Prompt ${index + 1}`,
+      prompt: (event.prompt ?? event.message ?? "").trim(),
+      start_timestamp: startTimestamp,
+      end_timestamp: endTimestamp,
+      event_count: eventCount,
+    };
+  });
+}
+
+function getPromptSliceIdForEvent(event: AgentEvent, promptSlices: PromptSlice[]): string | undefined {
+  if (event.prompt_segment_id) return event.prompt_segment_id;
+  return promptSlices.find((slice) => {
+    if (event.timestamp < slice.start_timestamp) return false;
+    if (slice.end_timestamp && event.timestamp >= slice.end_timestamp) return false;
+    return true;
+  })?.id;
+}
+
+function getSessionEvents(events: AgentEvent[], sessionId: string): AgentEvent[] {
+  return [...events]
+    .filter((event) => event.session_id === sessionId)
+    .sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+}
+
+function getTopTools(events: AgentEvent[]): [string, number][] {
+  const counts = new Map<string, number>();
+  for (const event of events) {
+    if (event.hook_event_type !== "PostToolUse" && event.hook_event_type !== "PostToolUseFailure") {
+      continue;
+    }
+    const toolName = event.tool_name ?? "unknown";
+    counts.set(toolName, (counts.get(toolName) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((left, right) => right[1] - left[1]).slice(0, 6);
+}
+
+export function getAuthoritativeSessionCost(events: AgentEvent[], sessionId?: string): number {
+  const relevant = sessionId
+    ? events.filter((event) => event.session_id === sessionId)
+    : events;
+
+  if (relevant.length === 0) return 0;
+
+  const costEvents = relevant.filter((event) => typeof event.cost_usd === "number");
+  if (costEvents.length === 0) return 0;
+
+  const terminal = costEvents.filter((event) => TERMINAL_COST_EVENTS.has(event.hook_event_type));
+  const source = terminal.length > 0 ? terminal : costEvents;
+  const sorted = [...source].sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+  return sorted[sorted.length - 1]?.cost_usd ?? 0;
+}
+
+export function getAuthoritativeTotalCost(events: AgentEvent[]): number {
+  const sessionIds = [...new Set(events.map((event) => event.session_id))];
+  return sessionIds.reduce((sum, sessionId) => sum + getAuthoritativeSessionCost(events, sessionId), 0);
+}
+
+function shouldExpandActorBranch(
+  actorKind: RunTraceLaneKind,
+  events: AgentEvent[],
+): boolean {
+  if (actorKind === "main" || actorKind === "teammate") return true;
+  if (events.some((event) => getRunTraceCategory(event) === "failure_or_anomaly")) return true;
+  if (events.some((event) => getRunTraceCategory(event) === "safety_or_policy")) return true;
+  if (
+    events.some(
+      (event) =>
+        event.hook_event_type === "PostToolUse" &&
+        !isInspectionOnlyEvent(event) &&
+        getRunTraceCategory(event) !== "reasoning_or_coordination",
+    )
+  ) {
+    return true;
+  }
+  if (events.some((event) => event.team_name || event.hook_event_type === "TeammateIdle")) return true;
+  if (events.filter((event) => event.hook_event_type === "PostToolUse").length >= 8) return true;
+  return getEventDurationMs(events) >= 45_000;
+}
+
+function flushInspectionBuffer(
+  laneId: string,
+  actorId: string,
+  promptSliceId: string | undefined,
+  inspectionBuffer: AgentEvent[],
+  nodes: RunTraceNode[],
+): void {
+  if (inspectionBuffer.length === 0) return;
+
+  const first = inspectionBuffer[0]!;
+  const last = inspectionBuffer[inspectionBuffer.length - 1]!;
+  const toolNames = uniqueStrings(inspectionBuffer.map((event) => event.tool_name));
+  const transcriptPaths = uniqueStrings(
+    inspectionBuffer.flatMap((event) => [event.agent_transcript_path, event.transcript_path]),
+  );
+
+  nodes.push({
+    id: `${laneId}:inspection:${first.id}`,
+    lane_id: laneId,
+    actor_id: actorId,
+    prompt_slice_id: promptSliceId,
+    kind: "inspection_block",
+    category: "inspection_only",
+    title: `${inspectionBuffer.length} inspection step${inspectionBuffer.length === 1 ? "" : "s"}`,
+    subtitle: toolNames.length > 0 ? toolNames.join(" · ") : "Read-only activity",
+    status: "completed",
+    start_timestamp: first.timestamp,
+    end_timestamp: last.timestamp,
+    duration_ms: Math.max(0, toTimestampMs(last.timestamp) - toTimestampMs(first.timestamp)),
+    collapsed_by_default: true,
+    event_ids: inspectionBuffer.map((event) => event.id),
+    tool_names: toolNames,
+    task_ids: uniqueStrings(inspectionBuffer.map((event) => event.task_id)),
+    transcript_paths: transcriptPaths,
+  });
+}
+
+function makeEventNode(
+  laneId: string,
+  actorId: string,
+  promptSliceId: string | undefined,
+  event: AgentEvent,
+): RunTraceNode {
+  const record = deriveTelemetryRecord(event);
+  const transcriptPaths = uniqueStrings([event.agent_transcript_path, event.transcript_path]);
+  return {
+    id: `${laneId}:${event.id}`,
+    lane_id: laneId,
+    actor_id: actorId,
+    prompt_slice_id: promptSliceId,
+    kind: getNodeKind(event),
+    category: getRunTraceCategory(event),
+    title: record.summary,
+    subtitle: record.detail,
+    status: getNodeStatus(event),
+    start_timestamp: event.timestamp,
+    end_timestamp: event.timestamp,
+    duration_ms: event.duration_ms ?? 0,
+    collapsed_by_default: Boolean(event.collapsed_by_default),
+    event_ids: [event.id],
+    tool_names: uniqueStrings([event.tool_name]),
+    task_ids: uniqueStrings([event.task_id]),
+    transcript_paths: transcriptPaths,
+  };
+}
+
+function deriveLaneNodes(
+  laneId: string,
+  actorId: string,
+  events: AgentEvent[],
+  promptSlices: PromptSlice[],
+): RunTraceNode[] {
+  const nodes: RunTraceNode[] = [];
+  const inspectionBuffer: AgentEvent[] = [];
+
+  const flush = (promptSliceId?: string) => {
+    flushInspectionBuffer(laneId, actorId, promptSliceId, [...inspectionBuffer], nodes);
+    inspectionBuffer.length = 0;
+  };
+
+  for (const event of events) {
+    const promptSliceId = getPromptSliceIdForEvent(event, promptSlices);
+    if (isInspectionOnlyEvent(event)) {
+      inspectionBuffer.push(event);
+      continue;
+    }
+    flush(promptSliceId);
+    nodes.push(makeEventNode(laneId, actorId, promptSliceId, event));
+  }
+
+  flush();
+
+  return nodes.sort((left, right) => left.start_timestamp.localeCompare(right.start_timestamp));
+}
+
+function makeBranchSummaryNode(
+  laneId: string,
+  actorId: string,
+  actorLabel: string,
+  actorEvents: AgentEvent[],
+  promptSlices: PromptSlice[],
+  collapsedByDefault: boolean,
+): RunTraceNode {
+  const first = actorEvents[0]!;
+  const last = actorEvents[actorEvents.length - 1]!;
+  const inspectionCount = actorEvents.filter(isInspectionOnlyEvent).length;
+  const significantCount = actorEvents.length - inspectionCount;
+  return {
+    id: `${laneId}:branch:${first.id}`,
+    lane_id: laneId,
+    actor_id: actorId,
+    prompt_slice_id: getPromptSliceIdForEvent(first, promptSlices),
+    kind: "agent",
+    category: collapsedByDefault ? "inspection_only" : "reasoning_or_coordination",
+    title: collapsedByDefault ? `${actorLabel} helper` : `Spawned ${actorLabel}`,
+    subtitle: collapsedByDefault
+      ? `${inspectionCount} read-only step${inspectionCount === 1 ? "" : "s"}`
+      : `${significantCount} significant · ${inspectionCount} inspection`,
+    status: actorEvents.some((event) => getNodeStatus(event) === "failed") ? "failed" : "completed",
+    start_timestamp: first.timestamp,
+    end_timestamp: last.timestamp,
+    duration_ms: Math.max(0, toTimestampMs(last.timestamp) - toTimestampMs(first.timestamp)),
+    collapsed_by_default: collapsedByDefault,
+    event_ids: actorEvents.map((event) => event.id),
+    tool_names: uniqueStrings(actorEvents.map((event) => event.tool_name)),
+    task_ids: uniqueStrings(actorEvents.map((event) => event.task_id)),
+    transcript_paths: uniqueStrings(
+      actorEvents.flatMap((event) => [event.agent_transcript_path, event.transcript_path]),
+    ),
+  };
+}
+
+function getLaneKind(actorKind: TelemetryActorKind): RunTraceLaneKind {
+  switch (actorKind) {
+    case "teammate":
+      return "teammate";
+    case "subagent":
+      return "subagent";
+    case "system":
+    case "main":
+    default:
+      return "main";
+  }
+}
+
+function buildRunTraceSummary(
+  sessionEvents: AgentEvent[],
+  promptSlices: PromptSlice[],
+  lanes: RunTraceLane[],
+): RunTraceSummary {
+  const mainLane = lanes.find((lane) => lane.kind === "main");
+  const subagentLanes = lanes.filter((lane) => lane.kind === "subagent");
+  const teammateLanes = lanes.filter((lane) => lane.kind === "teammate");
+  const expandedLanes = lanes.filter((lane) => lane.kind !== "main");
+  const collapsedHelperCount =
+    mainLane?.nodes.filter((node) => node.kind === "agent" && node.collapsed_by_default).length ?? 0;
+  const severity = sessionEvents.some((event) => getRunTraceCategory(event) === "failure_or_anomaly")
+    ? "error"
+    : sessionEvents.some((event) => getRunTraceCategory(event) === "safety_or_policy")
+      ? "warning"
+      : "info";
+
+  return {
+    session_id: sessionEvents[0]!.session_id,
+    first_timestamp: sessionEvents[0]!.timestamp,
+    last_timestamp: sessionEvents[sessionEvents.length - 1]!.timestamp,
+    duration_seconds: Math.round(getEventDurationMs(sessionEvents) / 1000),
+    total_cost_usd: getAuthoritativeSessionCost(sessionEvents),
+    prompt_count: promptSlices.length,
+    branch_count: Math.max(0, lanes.length - 1),
+    expanded_branch_count: expandedLanes.length,
+    collapsed_helper_count: collapsedHelperCount,
+    subagent_count: subagentLanes.length + collapsedHelperCount,
+    teammate_count: teammateLanes.length,
+    top_tools: getTopTools(sessionEvents),
+    models_used: uniqueStrings(sessionEvents.map((event) => event.model)),
+    severity,
+  };
+}
+
+export function deriveRunTraceModel(
+  events: AgentEvent[],
+  sessionId: string,
+  options: { promptSliceId?: string } = {},
+): RunTraceModel | null {
+  const sessionEvents = getSessionEvents(events, sessionId);
+  if (sessionEvents.length === 0) return null;
+
+  const promptSlices = getPromptSlicesForSession(sessionEvents, sessionId);
+  const selectedPromptSlice = options.promptSliceId
+    ? promptSlices.find((slice) => slice.id === options.promptSliceId)
+    : undefined;
+  const visibleEvents = selectedPromptSlice
+    ? sessionEvents.filter((event) => {
+        if (event.timestamp < selectedPromptSlice.start_timestamp) return false;
+        if (selectedPromptSlice.end_timestamp && event.timestamp >= selectedPromptSlice.end_timestamp) {
+          return false;
+        }
+        return true;
+      })
+    : sessionEvents;
+
+  const actorMap = new Map<
+    string,
+    {
+      actor_id: string;
+      actor_label: string;
+      actor_kind: RunTraceLaneKind;
+      events: AgentEvent[];
+    }
+  >();
+
+  for (const event of visibleEvents) {
+    const actor = getActor(event);
+    const laneKind = getLaneKind(actor.actor_kind);
+    const actorId = laneKind === "main" ? `main:${sessionId}` : actor.actor_id;
+    const actorLabel = laneKind === "main" ? "main" : actor.actor_label;
+    const existing = actorMap.get(actorId);
+    if (existing) {
+      existing.events.push(event);
+      continue;
+    }
+    actorMap.set(actorId, {
+      actor_id: actorId,
+      actor_label: actorLabel,
+      actor_kind: laneKind,
+      events: [event],
+    });
+  }
+
+  const mainLaneId = `${sessionId}:lane:main`;
+  const mainActor = actorMap.get(`main:${sessionId}`) ?? {
+    actor_id: `main:${sessionId}`,
+    actor_label: "main",
+    actor_kind: "main" as const,
+    events: visibleEvents.filter((event) => getLaneKind(getActor(event).actor_kind) === "main"),
+  };
+
+  const mainLaneNodes = deriveLaneNodes(mainLaneId, mainActor.actor_id, mainActor.events, promptSlices);
+  const lanes: RunTraceLane[] = [];
+
+  const auxiliaryActors = [...actorMap.values()]
+    .filter((actor) => actor.actor_id !== mainActor.actor_id)
+    .sort((left, right) => left.events[0]!.timestamp.localeCompare(right.events[0]!.timestamp));
+
+  for (const actor of auxiliaryActors) {
+    const expand = shouldExpandActorBranch(actor.actor_kind, actor.events);
+    const branchSummary = makeBranchSummaryNode(
+      mainLaneId,
+      actor.actor_id,
+      actor.actor_label,
+      actor.events,
+      promptSlices,
+      !expand,
+    );
+    mainLaneNodes.push(branchSummary);
+
+    if (!expand) continue;
+
+    const nodes = deriveLaneNodes(`${sessionId}:lane:${actor.actor_id}`, actor.actor_id, actor.events, promptSlices);
+    const bounds = getEventTimelineBounds(actor.events)!;
+    lanes.push({
+      id: `${sessionId}:lane:${actor.actor_id}`,
+      actor_id: actor.actor_id,
+      label: actor.actor_label,
+      kind: actor.actor_kind,
+      parent_lane_id: mainLaneId,
+      branch_summary_node_id: branchSummary.id,
+      collapsed_by_default: false,
+      event_count: actor.events.length,
+      inspection_event_count: actor.events.filter(isInspectionOnlyEvent).length,
+      significant_event_count: actor.events.filter((event) => !isInspectionOnlyEvent(event)).length,
+      failure_count: actor.events.filter((event) => getRunTraceCategory(event) === "failure_or_anomaly").length,
+      start_timestamp: bounds.start,
+      end_timestamp: bounds.end,
+      duration_ms: getEventDurationMs(actor.events),
+      nodes,
+    });
+  }
+
+  mainLaneNodes.sort((left, right) => left.start_timestamp.localeCompare(right.start_timestamp));
+  const mainBounds = getEventTimelineBounds(mainActor.events) ?? getEventTimelineBounds(visibleEvents)!;
+  const mainLane: RunTraceLane = {
+    id: mainLaneId,
+    actor_id: mainActor.actor_id,
+    label: "main",
+    kind: "main",
+    collapsed_by_default: false,
+    event_count: mainActor.events.length,
+    inspection_event_count: mainActor.events.filter(isInspectionOnlyEvent).length,
+    significant_event_count: mainActor.events.filter((event) => !isInspectionOnlyEvent(event)).length,
+    failure_count: mainActor.events.filter((event) => getRunTraceCategory(event) === "failure_or_anomaly").length,
+    start_timestamp: mainBounds.start,
+    end_timestamp: mainBounds.end,
+    duration_ms: getEventDurationMs(mainActor.events),
+    nodes: mainLaneNodes,
+  };
+
+  const orderedLanes = [
+    mainLane,
+    ...lanes.sort((left, right) => left.start_timestamp.localeCompare(right.start_timestamp)),
+  ];
+
+  return {
+    session_id: sessionId,
+    summary: buildRunTraceSummary(visibleEvents, promptSlices, orderedLanes),
+    prompt_slices: promptSlices,
+    selected_prompt_slice_id: selectedPromptSlice?.id,
+    lanes: orderedLanes,
+    raw_events: visibleEvents,
+  };
+}
+
+export function deriveRunTraceSummary(
+  events: AgentEvent[],
+  sessionId: string,
+): RunTraceSummary | null {
+  return deriveRunTraceModel(events, sessionId)?.summary ?? null;
+}
+
+export function getDefaultRunTraceNodeId(model: RunTraceModel | null): string | undefined {
+  if (!model) return undefined;
+  return model.lanes.flatMap((lane) => lane.nodes).find((node) => !node.collapsed_by_default)?.id
+    ?? model.lanes[0]?.nodes[0]?.id;
+}
+
+export function buildRunTraceInspector(
+  model: RunTraceModel,
+  nodeId: string,
+): RunTraceInspector | null {
+  const lane = model.lanes.find((candidate) => candidate.nodes.some((node) => node.id === nodeId));
+  if (!lane) return null;
+
+  const node = lane.nodes.find((candidate) => candidate.id === nodeId);
+  if (!node) return null;
+
+  const eventLookup = new Map(model.raw_events.map((event) => [event.id, event]));
+  const rawEvents = node.event_ids
+    .map((eventId) => eventLookup.get(eventId))
+    .filter((event): event is AgentEvent => Boolean(event))
+    .sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+  const rawRecords = rawEvents.map(deriveTelemetryRecord);
+
+  const significantActions = rawEvents
+    .filter((event) => getRunTraceCategory(event) !== "inspection_only")
+    .map((event): RunTraceInspectorAction => {
+      const record = deriveTelemetryRecord(event);
+      return {
+        event_id: event.id,
+        timestamp: event.timestamp,
+        severity: record.severity,
+        label: record.summary,
+        detail: record.detail,
+        tool_name: event.tool_name,
+      };
+    });
+
+  const inspectionActions = rawEvents
+    .filter(isInspectionOnlyEvent)
+    .map((event): RunTraceInspectorAction => {
+      const record = deriveTelemetryRecord(event);
+      return {
+        event_id: event.id,
+        timestamp: event.timestamp,
+        severity: record.severity,
+        label: record.summary,
+        detail: record.detail,
+        tool_name: event.tool_name,
+      };
+    });
+
+  return {
+    lane,
+    node,
+    prompt_slice: model.prompt_slices.find((slice) => slice.id === node.prompt_slice_id),
+    transcript_path: node.transcript_paths[0],
+    models_used: uniqueStrings(rawEvents.map((event) => event.model)),
+    ownership: {
+      actor_label: lane.label,
+      actor_kind: lane.kind,
+      parent_lane_id: lane.parent_lane_id,
+      task_ids: node.task_ids,
+    },
+    significant_actions: significantActions,
+    inspection_actions: inspectionActions,
+    raw_records: rawRecords,
+  };
+}
+
+export function formatDurationCompact(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}h ${remainingMinutes}m`;
+}

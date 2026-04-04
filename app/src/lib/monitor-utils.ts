@@ -1,4 +1,5 @@
 import type { AgentEvent, SessionSummary } from "@/types";
+import { getAuthoritativeSessionCost } from "@/lib/telemetry";
 
 export type MonitorSeverity = "info" | "warning" | "critical";
 export type MonitorBadgeVariant = "secondary" | "outline" | "destructive";
@@ -357,10 +358,7 @@ export function detectAnomalies(events: AgentEvent[]): MonitorAnomaly[] {
       break;
     }
 
-    const totalCost = sessionEvents.reduce(
-      (sum, event) => sum + (event.cost_usd ?? 0),
-      0,
-    );
+    const totalCost = getAuthoritativeSessionCost(sessionEvents);
     if (totalCost <= COST_SPIKE_USD) continue;
 
     anomalies.push({

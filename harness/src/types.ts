@@ -42,6 +42,37 @@ export interface HookBasePayload {
   agent_type?: string;
 }
 
+export type ToolCategory =
+  | "inspection"
+  | "filesystem"
+  | "command"
+  | "network"
+  | "mcp"
+  | "coordination"
+  | "approval"
+  | "policy"
+  | "mutation"
+  | "system"
+  | "unknown"
+  | "other";
+
+export type EffectLevel =
+  | "inspection_only"
+  | "reasoning_or_coordination"
+  | "significant_side_effect"
+  | "safety_or_policy"
+  | "failure_or_anomaly"
+  | "failure"
+  | "policy"
+  | "read"
+  | "write"
+  | "execute"
+  | "none";
+
+export type BranchKind = "main" | "subagent" | "teammate" | "team" | "system";
+export type RunOutcome = "active" | "completed" | "failed" | "cancelled" | "unknown";
+export type EventOutcome = RunOutcome;
+
 /**
  * Structured event written to the JSONL log.
  * Accepts ALL fields that hooks provide — we never refuse data.
@@ -74,11 +105,30 @@ export interface AgentEvent {
   agent_id?: string;
   agent_type?: string;
   model?: string;
+  root_run_id?: string;
+  parent_run_id?: string;
+  spawn_parent_agent_id?: string;
+  spawn_parent_event_id?: string;
+  branch_kind?: BranchKind;
 
-  // Task fields (from TaskCompleted)
+  // Task / prompt fields
   task_id?: string;
   task_subject?: string;
   task_description?: string;
+  prompt_segment_id?: string;
+
+  // Derived execution metadata
+  duration_ms?: number;
+  outcome?: RunOutcome;
+  failure_class?: string;
+  tool_category?: ToolCategory;
+  effect_level?: EffectLevel;
+  collapsed_by_default?: boolean;
+
+  // Approval / policy lineage when available
+  approval_state?: string;
+  approval_request_id?: string;
+  policy_name?: string;
 
   // Teammate fields
   teammate_name?: string;
@@ -103,7 +153,7 @@ export interface AgentEvent {
   trigger?: string;
   compact_summary?: string;
 
-  // MCP/Elicitation
+  // MCP / Elicitation
   mcp_server_name?: string;
   requested_schema?: Record<string, unknown>;
   mode?: string;

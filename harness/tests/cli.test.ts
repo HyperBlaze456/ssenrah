@@ -23,7 +23,7 @@ function writeTestEvents(events: Partial<AgentEvent>[]): void {
   const logFile = join(testLogDir, "events.jsonl");
   const lines = events.map((e) => JSON.stringify({
     id: `test-${Math.random().toString(36).slice(2)}`,
-    schema_version: 2,
+    schema_version: 3,
     timestamp: new Date().toISOString(),
     session_id: "test-session",
     hook_event_type: "PostToolUse",
@@ -111,6 +111,17 @@ describe("CLI", () => {
       const output = runCli("sessions");
       expect(output).toContain("2 sessions");
     }, 30000);
+
+    it("uses the latest session cost snapshot instead of summing duplicates", () => {
+      writeTestEvents([
+        { session_id: "session-AAA", hook_event_type: "Stop", cost_usd: 1.25 },
+        { session_id: "session-AAA", hook_event_type: "SessionEnd", cost_usd: 1.25 },
+      ]);
+
+      const output = runCli("sessions");
+      expect(output).toContain("$1.25");
+      expect(output).not.toContain("$2.50");
+    }, 30000);
   });
 
   describe("telemetry views", () => {
@@ -175,6 +186,41 @@ describe("CLI", () => {
       const tasksOutput = runCli("tasks --session test-session");
       expect(tasksOutput).toContain("task-1");
       expect(tasksOutput).toContain("completed");
+    }, 30000);
+
+    it("shows a run-trace view with collapsed and expanded branches", () => {
+      writeTestEvents([
+        { session_id: "session-run", timestamp: "2026-04-01T00:00:00.000Z", hook_event_type: "SessionStart" },
+        { session_id: "session-run", timestamp: "2026-04-01T00:00:01.000Z", hook_event_type: "UserPromptSubmit", prompt: "Investigate" },
+        {
+          session_id: "session-run",
+          timestamp: "2026-04-01T00:00:02.000Z",
+          hook_event_type: "SubagentStart",
+          agent_id: "agent-helper",
+          agent_type: "Explore",
+        },
+        {
+          session_id: "session-run",
+          timestamp: "2026-04-01T00:00:03.000Z",
+          hook_event_type: "PostToolUse",
+          agent_id: "agent-helper",
+          agent_type: "Explore",
+          tool_name: "Read",
+          tool_category: "inspection",
+          effect_level: "inspection_only",
+        },
+        {
+          session_id: "session-run",
+          timestamp: "2026-04-01T00:00:04.000Z",
+          hook_event_type: "SubagentStop",
+          agent_id: "agent-helper",
+          agent_type: "Explore",
+        },
+      ]);
+
+      const output = runCli("run-trace --session session-run");
+      expect(output).toContain("Run trace for session-run");
+      expect(output).toContain("collapsed");
     }, 30000);
   });
 

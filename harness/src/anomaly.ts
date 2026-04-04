@@ -14,6 +14,7 @@ import { readFileSync, existsSync, mkdirSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AgentEvent } from "./types.js";
+import { getAuthoritativeSessionCost } from "./telemetry.js";
 
 export type AnomalyType =
   | "infinite_loop"
@@ -265,10 +266,7 @@ function detectCostSpikes(
   }
 
   for (const [sessionId, sessionEvents] of sessions) {
-    const totalCost = sessionEvents.reduce(
-      (sum, e) => sum + (e.cost_usd ?? 0),
-      0
-    );
+    const totalCost = getAuthoritativeSessionCost(sessionEvents, sessionId);
 
     if (totalCost > config.cost_spike_threshold_usd) {
       const costEvents = sessionEvents.filter((e) => e.cost_usd && e.cost_usd > 0);
