@@ -6,6 +6,58 @@ import { calculateSessionCost, formatCost, formatTokens } from "../src/cost.js";
 
 let testDir: string;
 
+function writeCodexRollout(path: string, overrides: {
+  sessionId?: string;
+  model?: string;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  reasoningOutputTokens?: number;
+} = {}): void {
+  const sessionId = overrides.sessionId ?? "codex-session";
+  const model = overrides.model ?? "gpt-5.4";
+  const lines = [
+    JSON.stringify({
+      timestamp: "2026-04-05T00:00:00.000Z",
+      type: "session_meta",
+      payload: {
+        id: sessionId,
+        timestamp: "2026-04-05T00:00:00.000Z",
+        cwd: "/repo",
+        source: "cli",
+        model_provider: "openai",
+      },
+    }),
+    JSON.stringify({
+      timestamp: "2026-04-05T00:00:01.000Z",
+      type: "turn_context",
+      payload: {
+        turn_id: "turn-1",
+        cwd: "/repo",
+        model,
+      },
+    }),
+    JSON.stringify({
+      timestamp: "2026-04-05T00:00:02.000Z",
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: {
+          total_token_usage: {
+            input_tokens: overrides.inputTokens ?? 1000,
+            cached_input_tokens: overrides.cachedInputTokens ?? 500,
+            output_tokens: overrides.outputTokens ?? 400,
+            reasoning_output_tokens: overrides.reasoningOutputTokens ?? 150,
+            total_tokens: (overrides.inputTokens ?? 1000) + (overrides.outputTokens ?? 400),
+          },
+        },
+      },
+    }),
+  ];
+
+  writeFileSync(path, lines.join("\n") + "\n");
+}
+
 describe("calculateSessionCost", () => {
   beforeEach(() => {
     testDir = join(
@@ -176,6 +228,40 @@ describe("calculateSessionCost", () => {
     );
     const cost = calculateSessionCost(transcriptPath);
     expect(cost).toBeNull();
+  });
+
+  it("calculates cost from a Codex rollout transcript", () => {
+    const transcriptPath = join(testDir, "codex-rollout.jsonl");
+    writeCodexRollout(transcriptPath, {
+      model: "gpt-5.4",
+      inputTokens: 1000,
+      cachedInputTokens: 500,
+      outputTokens: 400,
+      reasoningOutputTokens: 150,
+    });
+
+    const cost = calculateSessionCost(transcriptPath);
+    expect(cost).not.toBeNull();
+    expect(cost!.model).toBe("gpt-5.4");
+    expect(cost!.input_tokens).toBe(1000);
+    expect(cost!.cache_read_input_tokens).toBe(500);
+    expect(cost!.output_tokens).toBe(400);
+    expect(cost!.cost_usd).toBeCloseTo(0.0086, 4);
+  });
+
+  it("uses GPT-5.3-Codex pricing as the prefix match for Codex Spark rollouts", () => {
+    const transcriptPath = join(testDir, "codex-spark-rollout.jsonl");
+    writeCodexRollout(transcriptPath, {
+      model: "gpt-5.3-codex-spark",
+      inputTokens: 1000,
+      cachedInputTokens: 1000,
+      outputTokens: 1000,
+    });
+
+    const cost = calculateSessionCost(transcriptPath);
+    expect(cost).not.toBeNull();
+    expect(cost!.model).toBe("gpt-5.3-codex-spark");
+    expect(cost!.cost_usd).toBeCloseTo(0.0159, 4);
   });
 
   it("computes total_tokens as sum of all token types", () => {

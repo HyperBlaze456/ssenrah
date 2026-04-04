@@ -1,10 +1,13 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import Database from "better-sqlite3";
+import { parseCodexRollout } from "./codex-rollout.js";
+import { calculateSessionCost } from "./cost.js";
 import type { AgentEvent, EffectLevel, ToolCategory } from "./types.js";
 
 interface CodexThreadRow {
   id: string;
+  rollout_path: string | null;
   title: string;
   source: string;
   model_provider: string;
@@ -26,28 +29,10 @@ interface CodexSpawnEdgeRow {
   status: string;
 }
 
-interface CodexLogRow {
-  id: number;
-  ts: number;
-  ts_nanos: number;
-  level: string;
-  target: string;
-  feedback_log_body: string | null;
-  thread_id: string | null;
-}
-
-interface CodexHistoryEntry {
-  session_id: string;
-  ts: number;
-  text: string;
-}
-
-interface CodexParsedToolCall {
-  tool_name: string;
-  tool_input?: Record<string, unknown>;
-  model?: string;
-  turn_id?: string;
-  submission_id?: string;
+interface CodexHomeResolution {
+  codex_dir: string;
+  sessions_dir?: string;
+  rollout_files: string[];
 }
 
 const DEFAULT_CODEX_DIR = join(process.env.HOME ?? "~", ".codex");
@@ -84,6 +69,12 @@ function includeCodexByDefault(): boolean {
   return !raw || !DISABLED_VALUES.has(raw);
 }
 
+function expandHome(value: string): string {
+  if (value === "~") return process.env.HOME ?? value;
+  if (value.startsWith("~/")) return join(process.env.HOME ?? "~", value.slice(2));
+  return value;
+}
+
 function pickLatestSqliteFile(codexDir: string, prefix: string): string | null {
   const matches = readdirSync(codexDir, { withFileTypes: true })
     .filter((entry) => entry.isFile() && new RegExp(`^${prefix}_(\\d+)\\.sqlite$`).test(entry.name))
@@ -96,8 +87,58 @@ function pickLatestSqliteFile(codexDir: string, prefix: string): string | null {
   return matches[0] ? join(codexDir, matches[0].name) : null;
 }
 
-function toIsoFromSeconds(tsSeconds: number, tsNanos = 0): string {
-  return new Date(tsSeconds * 1000 + Math.floor(tsNanos / 1_000_000)).toISOString();
+function listRolloutFiles(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+
+  const files: string[] = [];
+  const stack = [dir];
+
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const path = join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(path);
+      } else if (entry.isFile() && /^rollout-.*\.jsonl$/.test(entry.name)) {
+        files.push(path);
+      }
+    }
+  }
+
+  return files.sort();
+}
+
+function resolveCodexHome(input = process.env.SSENRAH_CODEX_DIR ?? DEFAULT_CODEX_DIR): CodexHomeResolution | null {
+  const resolved = expandHome(input);
+  if (!existsSync(resolved)) return null;
+
+  if (resolved.endsWith(".jsonl")) {
+    const codexDir = resolved.includes("/.codex/") ? resolved.slice(0, resolved.indexOf("/.codex/") + "/.codex".length) : dirname(dirname(dirname(dirname(resolved))));
+    const sessionsDir = resolved.includes("/sessions/") ? resolved.slice(0, resolved.indexOf("/sessions/") + "/sessions".length) : undefined;
+    return {
+      codex_dir: codexDir,
+      sessions_dir: sessionsDir,
+      rollout_files: [resolved],
+    };
+  }
+
+  const directCodexDir = basename(resolved) === ".codex" ? resolved : existsSync(join(resolved, ".codex")) ? join(resolved, ".codex") : resolved;
+  const sessionsDir = basename(directCodexDir) === "sessions" ? directCodexDir : existsSync(join(directCodexDir, "sessions")) ? join(directCodexDir, "sessions") : undefined;
+  const codexDir = basename(directCodexDir) === "sessions" ? dirname(directCodexDir) : directCodexDir;
+
+  return {
+    codex_dir: codexDir,
+    sessions_dir: sessionsDir,
+    rollout_files: sessionsDir ? listRolloutFiles(sessionsDir) : [],
+  };
+}
+
+function toIsoFromSeconds(tsSeconds: number): string {
+  return new Date(tsSeconds * 1000).toISOString();
+}
+
+function toUnixSeconds(isoTimestamp: string): number {
+  return Math.floor(new Date(isoTimestamp).getTime() / 1000);
 }
 
 function titleCase(value: string | null | undefined): string | undefined {
@@ -115,6 +156,28 @@ function safeJsonParse(value: string): unknown {
   } catch {
     return null;
   }
+}
+
+function stringifyUnknown(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function summarizeAgentStatus(status: unknown): string | undefined {
+  if (typeof status === "string") return status;
+  if (!status || typeof status !== "object") return undefined;
+  const record = status as Record<string, unknown>;
+  if (Object.prototype.hasOwnProperty.call(record, "completed")) return "completed";
+  if (Object.prototype.hasOwnProperty.call(record, "failed") || Object.prototype.hasOwnProperty.call(record, "errored")) {
+    return "failed";
+  }
+  if (Object.prototype.hasOwnProperty.call(record, "cancelled")) return "cancelled";
+  return undefined;
 }
 
 function parseSpawnSource(source: string | null | undefined): string | undefined {
@@ -208,7 +271,14 @@ function classifyCodexToolCall(
     return { tool_category: "command", effect_level: "significant_side_effect" };
   }
 
-  if (toolName === "update_plan" || toolName === "spawn_agent" || toolName === "wait_agent" || toolName === "send_input" || toolName === "close_agent" || toolName === "resume_agent") {
+  if (
+    toolName === "update_plan" ||
+    toolName === "spawn_agent" ||
+    toolName === "wait_agent" ||
+    toolName === "send_input" ||
+    toolName === "close_agent" ||
+    toolName === "resume_agent"
+  ) {
     return { tool_category: "coordination", effect_level: "reasoning_or_coordination" };
   }
 
@@ -231,208 +301,328 @@ function classifyCodexToolCall(
   return { tool_category: "other", effect_level: "reasoning_or_coordination" };
 }
 
-function parseToolCallBody(feedbackLogBody: string): CodexParsedToolCall | null {
-  const marker = "ToolCall: ";
-  const markerIndex = feedbackLogBody.indexOf(marker);
-  if (markerIndex < 0) return null;
+function findRolloutPathForThread(
+  thread: Pick<CodexThreadRow, "id" | "rollout_path">,
+  resolution: CodexHomeResolution,
+): string | undefined {
+  if (thread.rollout_path && existsSync(thread.rollout_path)) return thread.rollout_path;
+  return resolution.rollout_files.find((path) => path.includes(thread.id));
+}
 
-  const threadMarkerIndex = feedbackLogBody.lastIndexOf(" thread_id=");
-  const toolCallBody = feedbackLogBody
-    .slice(markerIndex + marker.length, threadMarkerIndex >= 0 ? threadMarkerIndex : undefined)
-    .trim();
-  if (!toolCallBody) return null;
+export function loadCodexEvents(
+  codexInput = process.env.SSENRAH_CODEX_DIR ?? DEFAULT_CODEX_DIR,
+): AgentEvent[] {
+  if (!includeCodexByDefault()) return [];
 
-  const firstWhitespace = toolCallBody.search(/\s/);
-  const tool_name = firstWhitespace >= 0 ? toolCallBody.slice(0, firstWhitespace).trim() : toolCallBody;
-  const rawInput = firstWhitespace >= 0 ? toolCallBody.slice(firstWhitespace).trim() : "";
+  const resolution = resolveCodexHome(codexInput);
+  if (!resolution) return [];
 
-  let tool_input: Record<string, unknown> | undefined;
-  if (rawInput.startsWith("{")) {
-    const parsed = safeJsonParse(rawInput);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      tool_input = parsed as Record<string, unknown>;
-    } else if (parsed !== null) {
-      tool_input = { value: parsed };
-    } else {
-      tool_input = { raw: rawInput };
+  const stateDbPath = pickLatestSqliteFile(resolution.codex_dir, "state");
+  const threads: CodexThreadRow[] = [];
+  const edges: CodexSpawnEdgeRow[] = [];
+
+  if (stateDbPath) {
+    const stateDb = new Database(stateDbPath, { readonly: true, fileMustExist: true });
+    try {
+      threads.push(
+        ...((stateDb
+          .prepare(`
+            select
+              id, rollout_path, title, source, model_provider, cwd, created_at, updated_at,
+              archived, archived_at, model, reasoning_effort, agent_nickname, agent_role, agent_path
+            from threads
+            order by created_at asc
+          `)
+          .all() as unknown) as CodexThreadRow[]),
+      );
+
+      const hasSpawnEdgesTable = Boolean(
+        stateDb
+          .prepare(`select 1 as present from sqlite_master where type = 'table' and name = 'thread_spawn_edges' limit 1`)
+          .get(),
+      );
+
+      if (hasSpawnEdgesTable) {
+        edges.push(
+          ...((stateDb
+            .prepare(`select parent_thread_id, child_thread_id, status from thread_spawn_edges`)
+            .all() as unknown) as CodexSpawnEdgeRow[]),
+        );
+      }
+    } finally {
+      stateDb.close();
     }
-  } else if (rawInput.length > 0) {
-    tool_input = tool_name === "apply_patch" ? { patch: rawInput } : { raw: rawInput };
   }
 
-  return {
-    tool_name,
-    tool_input,
-    model: feedbackLogBody.match(/ model=([^\s}:]+)/)?.[1],
-    turn_id: feedbackLogBody.match(/ turn\.id=([^\s}]+)/)?.[1],
-    submission_id: feedbackLogBody.match(/ submission\.id="([^"]+)"/)?.[1],
-  };
-}
+  if (threads.length === 0 && resolution.rollout_files.length === 0) return [];
 
-function parseTurnError(feedbackLogBody: string): string | undefined {
-  const marker = "Turn error: ";
-  const index = feedbackLogBody.indexOf(marker);
-  if (index < 0) return undefined;
-  return feedbackLogBody.slice(index + marker.length).trim();
-}
-
-function readCodexHistory(historyPath: string): CodexHistoryEntry[] {
-  if (!existsSync(historyPath)) return [];
-  const lines = readFileSync(historyPath, "utf-8").split("\n").filter(Boolean);
-  const entries: CodexHistoryEntry[] = [];
-
-  for (const line of lines) {
-    const parsed = safeJsonParse(line) as Partial<CodexHistoryEntry> | null;
-    if (
-      parsed &&
-      typeof parsed.session_id === "string" &&
-      typeof parsed.ts === "number" &&
-      typeof parsed.text === "string"
-    ) {
-      entries.push({
-        session_id: parsed.session_id,
-        ts: parsed.ts,
-        text: parsed.text,
+  if (threads.length === 0) {
+    for (const rolloutPath of resolution.rollout_files) {
+      const rollout = parseCodexRollout(rolloutPath);
+      if (!rollout) continue;
+      const lastModel = [...rollout.turns].reverse().find((turn) => turn.model && turn.model !== "unknown")?.model ?? null;
+      threads.push({
+        id: rollout.session_id,
+        rollout_path: rolloutPath,
+        title: rollout.prompts[0]?.content ?? basename(rolloutPath),
+        source: rollout.source ?? "cli",
+        model_provider: rollout.model_provider ?? "unknown",
+        cwd: rollout.cwd,
+        created_at: toUnixSeconds(rollout.started_at),
+        updated_at: toUnixSeconds(rollout.ended_at),
+        archived: 1,
+        archived_at: toUnixSeconds(rollout.ended_at),
+        model: lastModel,
+        reasoning_effort: null,
+        agent_nickname: null,
+        agent_role: null,
+        agent_path: null,
       });
     }
   }
 
-  return entries.sort((left, right) => left.ts - right.ts);
-}
+  const parentByChild = new Map(edges.map((edge) => [edge.child_thread_id, edge.parent_thread_id]));
+  for (const thread of threads) {
+    if (parentByChild.has(thread.id)) continue;
+    const sourceParent = parseSpawnSource(thread.source);
+    if (sourceParent) parentByChild.set(thread.id, sourceParent);
+  }
 
-export function loadCodexEvents(
-  codexDir = process.env.SSENRAH_CODEX_DIR ?? DEFAULT_CODEX_DIR,
-): AgentEvent[] {
-  if (!includeCodexByDefault() || !existsSync(codexDir)) return [];
+  const rootMemo = new Map<string, string>();
+  const transcriptByThreadId = new Map<string, ReturnType<typeof parseCodexRollout>>();
+  const transcriptPathByThreadId = new Map<string, string>();
+  const threadById = new Map<string, CodexThreadRow>(threads.map((thread) => [thread.id, thread]));
 
-  const stateDbPath = pickLatestSqliteFile(codexDir, "state");
-  const logsDbPath = pickLatestSqliteFile(codexDir, "logs");
-  if (!stateDbPath || !logsDbPath) return [];
+  for (const thread of threads) {
+    const rolloutPath = findRolloutPathForThread(thread, resolution);
+    if (!rolloutPath) continue;
+    transcriptPathByThreadId.set(thread.id, rolloutPath);
+    transcriptByThreadId.set(thread.id, parseCodexRollout(rolloutPath));
+  }
 
-  const historyPath = join(codexDir, "history.jsonl");
-  const stateDb = new Database(stateDbPath, { readonly: true, fileMustExist: true });
-  const logsDb = new Database(logsDbPath, { readonly: true, fileMustExist: true });
+  const spawnEventByChildId = new Map<string, { timestamp: string; payload: Record<string, unknown> }>();
+  const closeEventByChildId = new Map<string, { timestamp: string; payload: Record<string, unknown> }>();
 
-  try {
-    const threads = stateDb
-      .prepare(`
-        select
-          id, title, source, model_provider, cwd, created_at, updated_at,
-          archived, archived_at, model, reasoning_effort, agent_nickname, agent_role, agent_path
-        from threads
-        order by created_at asc
-      `)
-      .all() as CodexThreadRow[];
+  for (const thread of threads) {
+    const rootThreadId = getRootThreadId(thread.id, parentByChild, rootMemo);
+    if (rootThreadId !== thread.id) continue;
 
-    if (threads.length === 0) return [];
+    const rollout = transcriptByThreadId.get(thread.id);
+    if (!rollout) continue;
 
-    const hasSpawnEdgesTable = Boolean(
-      stateDb
-        .prepare(`select 1 as present from sqlite_master where type = 'table' and name = 'thread_spawn_edges' limit 1`)
-        .get(),
-    );
-
-    const edges = hasSpawnEdgesTable
-      ? (stateDb
-          .prepare(`select parent_thread_id, child_thread_id, status from thread_spawn_edges`)
-          .all() as CodexSpawnEdgeRow[])
-      : [];
-
-    const threadById = new Map(threads.map((thread) => [thread.id, thread]));
-    const parentByChild = new Map(edges.map((edge) => [edge.child_thread_id, edge.parent_thread_id]));
-
-    for (const thread of threads) {
-      if (parentByChild.has(thread.id)) continue;
-      const sourceParent = parseSpawnSource(thread.source);
-      if (sourceParent) parentByChild.set(thread.id, sourceParent);
+    for (const event of rollout.spawn_events) {
+      if (typeof event.payload.new_thread_id === "string") {
+        spawnEventByChildId.set(event.payload.new_thread_id, {
+          timestamp: event.timestamp,
+          payload: event.payload,
+        });
+      }
     }
 
-    const rootMemo = new Map<string, string>();
-    const histories = readCodexHistory(historyPath).filter((entry) => threadById.has(entry.session_id));
-    const relevantLogs = logsDb
-      .prepare(`
-        select id, ts, ts_nanos, level, target, feedback_log_body, thread_id
-        from logs
-        where
-          thread_id is not null and
-          feedback_log_body is not null and
-          (
-            feedback_log_body like '%ToolCall:%' or
-            feedback_log_body like '%Turn error:%'
-          )
-        order by ts asc, ts_nanos asc, id asc
-      `)
-      .all() as CodexLogRow[];
+    for (const event of rollout.close_events) {
+      if (typeof event.payload.receiver_thread_id === "string") {
+        closeEventByChildId.set(event.payload.receiver_thread_id, {
+          timestamp: event.timestamp,
+          payload: event.payload,
+        });
+      }
+    }
+  }
 
-    const promptCounters = new Map<string, number>();
-    const events: AgentEvent[] = [];
+  const events: AgentEvent[] = [];
 
-    for (const thread of threads) {
-      const rootThreadId = getRootThreadId(thread.id, parentByChild, rootMemo);
-      const isRootThread = rootThreadId === thread.id;
-      const agentType = titleCase(thread.agent_role) ?? thread.agent_nickname ?? "Subagent";
+  for (const thread of threads) {
+    const rootThreadId = getRootThreadId(thread.id, parentByChild, rootMemo);
+    const isRootThread = rootThreadId === thread.id;
+    const rollout = transcriptByThreadId.get(thread.id);
+    const rootTranscriptPath = transcriptPathByThreadId.get(rootThreadId) ?? transcriptPathByThreadId.get(thread.id);
+    const agentTranscriptPath = isRootThread ? undefined : transcriptPathByThreadId.get(thread.id);
+    const edgeStatus = edges.find((edge) => edge.child_thread_id === thread.id)?.status;
+    const agentType = titleCase(thread.agent_role) ?? thread.agent_nickname ?? "Subagent";
+    const startTimestamp = isRootThread
+      ? rollout?.started_at ?? toIsoFromSeconds(thread.created_at)
+      : spawnEventByChildId.get(thread.id)?.timestamp ?? rollout?.started_at ?? toIsoFromSeconds(thread.created_at);
+    const cost = isRootThread && rootTranscriptPath ? calculateSessionCost(rootTranscriptPath) : null;
 
-      if (isRootThread) {
+    if (isRootThread) {
+      events.push({
+        id: `codex:session-start:${thread.id}`,
+        schema_version: 3,
+        timestamp: startTimestamp,
+        session_id: thread.id,
+        transcript_path: rootTranscriptPath,
+        hook_event_type: "SessionStart",
+        cwd: thread.cwd,
+        source: `codex:${thread.source}`,
+        model: thread.model ?? rollout?.turns[0]?.model ?? undefined,
+        outcome: "active",
+        branch_kind: "main",
+        root_run_id: thread.id,
+        extras: {
+          provider: "codex",
+          model_provider: thread.model_provider,
+          reasoning_effort: thread.reasoning_effort,
+        },
+        _raw: {
+          provider: "codex",
+          thread,
+          rollout,
+        },
+      });
+    } else {
+      events.push({
+        id: `codex:subagent-start:${thread.id}`,
+        schema_version: 3,
+        timestamp: spawnEventByChildId.get(thread.id)?.timestamp ?? startTimestamp,
+        session_id: rootThreadId,
+        transcript_path: rootTranscriptPath,
+        agent_transcript_path: agentTranscriptPath,
+        hook_event_type: "SubagentStart",
+        cwd: thread.cwd,
+        agent_id: thread.id,
+        agent_type: agentType,
+        model: thread.model ?? rollout?.turns[0]?.model ?? undefined,
+        outcome: "active",
+        branch_kind: "subagent",
+        root_run_id: rootThreadId,
+        parent_run_id: parentByChild.get(thread.id),
+        reason: thread.title,
+        collapsed_by_default: true,
+        extras: {
+          provider: "codex",
+          model_provider: thread.model_provider,
+          agent_nickname: thread.agent_nickname,
+          agent_path: thread.agent_path,
+        },
+        _raw: {
+          provider: "codex",
+          thread,
+          rollout,
+        },
+      });
+    }
+
+    if (isRootThread && rollout) {
+      rollout.prompts.forEach((prompt, index) => {
         events.push({
-          id: `codex:session-start:${thread.id}`,
+          id: `codex:prompt:${thread.id}:${index + 1}`,
           schema_version: 3,
-          timestamp: toIsoFromSeconds(thread.created_at),
+          timestamp: prompt.timestamp,
           session_id: thread.id,
-          hook_event_type: "SessionStart",
+          transcript_path: rootTranscriptPath,
+          hook_event_type: "UserPromptSubmit",
           cwd: thread.cwd,
-          source: `codex:${thread.source}`,
+          prompt: prompt.content,
+          message: prompt.content,
+          prompt_segment_id: `${thread.id}:prompt:${index + 1}`,
           model: thread.model ?? undefined,
-          outcome: "active",
           branch_kind: "main",
           root_run_id: thread.id,
+          effect_level: "reasoning_or_coordination",
+          tool_category: "coordination",
           extras: {
             provider: "codex",
             model_provider: thread.model_provider,
-            reasoning_effort: thread.reasoning_effort,
           },
           _raw: {
             provider: "codex",
-            thread,
+            prompt,
           },
         });
-      } else {
+      });
+    }
+
+    if (rollout) {
+      const resultByCallId = new Map(rollout.tool_results.map((result) => [result.call_id, result]));
+      const modelByTurnId = new Map(rollout.turns.map((turn) => [turn.turn_id, turn.model]));
+
+      for (const call of rollout.tool_calls) {
+        const result = resultByCallId.get(call.call_id);
+        const classification = classifyCodexToolCall(call.tool_name, call.tool_input);
+        const success = result?.success !== false;
+
         events.push({
-          id: `codex:subagent-start:${thread.id}`,
+          id: `codex:tool:${thread.id}:${call.call_id}`,
           schema_version: 3,
-          timestamp: toIsoFromSeconds(thread.created_at),
+          timestamp: result?.timestamp ?? call.timestamp,
           session_id: rootThreadId,
-          hook_event_type: "SubagentStart",
+          transcript_path: rootTranscriptPath,
+          agent_transcript_path: agentTranscriptPath,
+          hook_event_type: success ? "PostToolUse" : "PostToolUseFailure",
           cwd: thread.cwd,
-          agent_id: thread.id,
-          agent_type: agentType,
-          model: thread.model ?? undefined,
-          outcome: "active",
-          branch_kind: "subagent",
+          tool_name: call.tool_name,
+          tool_input: call.tool_input,
+          tool_use_id: call.call_id,
+          tool_response: result?.output,
+          error: success ? undefined : result?.error ?? "Tool failed",
+          model: call.turn_id ? modelByTurnId.get(call.turn_id) ?? thread.model ?? undefined : thread.model ?? undefined,
+          agent_id: isRootThread ? undefined : thread.id,
+          agent_type: isRootThread ? undefined : agentType,
           root_run_id: rootThreadId,
-          parent_run_id: parentByChild.get(thread.id),
-          reason: thread.title,
-          collapsed_by_default: true,
+          parent_run_id: isRootThread ? undefined : parentByChild.get(thread.id),
+          branch_kind: isRootThread ? "main" : "subagent",
+          tool_category: classification.tool_category,
+          effect_level: success ? classification.effect_level : "failure_or_anomaly",
+          collapsed_by_default:
+            classification.effect_level === "inspection_only" ||
+            (!isRootThread && classification.effect_level === "reasoning_or_coordination"),
           extras: {
             provider: "codex",
-            model_provider: thread.model_provider,
-            agent_nickname: thread.agent_nickname,
-            agent_path: thread.agent_path,
+            result_payload: result?.raw_payload,
           },
           _raw: {
             provider: "codex",
-            thread,
+            call,
+            result,
           },
         });
       }
+    }
 
-      const edgeStatus = edges.find((edge) => edge.child_thread_id === thread.id)?.status;
-      const endedAt = thread.archived_at ?? (edgeStatus && edgeStatus !== "open" ? thread.updated_at : null);
-      if (!isRootThread && endedAt) {
+    const endTimestamp = isRootThread
+      ? thread.archived || rollout?.has_task_complete
+        ? rollout?.ended_at ?? (thread.archived_at ? toIsoFromSeconds(thread.archived_at) : undefined)
+        : undefined
+      : closeEventByChildId.get(thread.id)?.timestamp ??
+        (thread.archived || edgeStatus && edgeStatus !== "open" || rollout?.has_task_complete ? rollout?.ended_at : undefined) ??
+        (thread.archived_at ? toIsoFromSeconds(thread.archived_at) : edgeStatus && edgeStatus !== "open" ? toIsoFromSeconds(thread.updated_at) : undefined);
+
+    if (endTimestamp) {
+      if (isRootThread) {
+        events.push({
+          id: `codex:session-end:${thread.id}`,
+          schema_version: 3,
+          timestamp: endTimestamp,
+          session_id: thread.id,
+          transcript_path: rootTranscriptPath,
+          hook_event_type: "SessionEnd",
+          cwd: thread.cwd,
+          source: `codex:${thread.source}`,
+          reason: thread.archived ? "archived" : "completed",
+          model: thread.model ?? undefined,
+          outcome: "completed",
+          branch_kind: "main",
+          root_run_id: thread.id,
+          cost_usd: cost?.cost_usd,
+          extras: {
+            provider: "codex",
+            model_provider: thread.model_provider,
+          },
+          _raw: {
+            provider: "codex",
+            thread,
+            rollout,
+          },
+        });
+      } else {
+        const closePayload = closeEventByChildId.get(thread.id)?.payload;
         events.push({
           id: `codex:subagent-stop:${thread.id}`,
           schema_version: 3,
-          timestamp: toIsoFromSeconds(endedAt),
+          timestamp: endTimestamp,
           session_id: rootThreadId,
+          transcript_path: rootTranscriptPath,
+          agent_transcript_path: agentTranscriptPath,
           hook_event_type: "SubagentStop",
           cwd: thread.cwd,
           agent_id: thread.id,
@@ -442,7 +632,10 @@ export function loadCodexEvents(
           branch_kind: "subagent",
           root_run_id: rootThreadId,
           parent_run_id: parentByChild.get(thread.id),
-          reason: edgeStatus ?? "archived",
+          reason:
+            summarizeAgentStatus(closePayload?.status) ??
+            edgeStatus ??
+            (thread.archived ? "archived" : "completed"),
           collapsed_by_default: true,
           extras: {
             provider: "codex",
@@ -451,150 +644,30 @@ export function loadCodexEvents(
           _raw: {
             provider: "codex",
             thread,
-            edge_status: edgeStatus,
+            close_payload: closePayload,
           },
         });
       }
     }
-
-    for (const entry of histories) {
-      const rootThreadId = getRootThreadId(entry.session_id, parentByChild, rootMemo);
-      const promptIndex = (promptCounters.get(rootThreadId) ?? 0) + 1;
-      promptCounters.set(rootThreadId, promptIndex);
-
-      const thread = threadById.get(entry.session_id)!;
-      const isRootThread = rootThreadId === entry.session_id;
-      events.push({
-        id: `codex:prompt:${entry.session_id}:${entry.ts}:${promptIndex}`,
-        schema_version: 3,
-        timestamp: toIsoFromSeconds(entry.ts),
-        session_id: rootThreadId,
-        hook_event_type: "UserPromptSubmit",
-        cwd: thread.cwd,
-        prompt: entry.text,
-        message: entry.text,
-        prompt_segment_id: `${rootThreadId}:prompt:${promptIndex}`,
-        model: thread.model ?? undefined,
-        branch_kind: isRootThread ? "main" : "subagent",
-        root_run_id: rootThreadId,
-        parent_run_id: isRootThread ? undefined : parentByChild.get(entry.session_id),
-        agent_id: isRootThread ? undefined : entry.session_id,
-        agent_type: isRootThread ? undefined : titleCase(thread.agent_role) ?? thread.agent_nickname ?? "Subagent",
-        effect_level: "reasoning_or_coordination",
-        tool_category: "coordination",
-        extras: {
-          provider: "codex",
-          model_provider: thread.model_provider,
-        },
-        _raw: {
-          provider: "codex",
-          history: entry,
-        },
-      });
-    }
-
-    for (const row of relevantLogs) {
-      if (!row.thread_id || !row.feedback_log_body || !threadById.has(row.thread_id)) continue;
-
-      const thread = threadById.get(row.thread_id)!;
-      const rootThreadId = getRootThreadId(row.thread_id, parentByChild, rootMemo);
-      const isRootThread = rootThreadId === row.thread_id;
-      const agentType = isRootThread
-        ? undefined
-        : titleCase(thread.agent_role) ?? thread.agent_nickname ?? "Subagent";
-      const timestamp = toIsoFromSeconds(row.ts, row.ts_nanos);
-      const parsedToolCall = parseToolCallBody(row.feedback_log_body);
-
-      if (parsedToolCall) {
-        const classification = classifyCodexToolCall(parsedToolCall.tool_name, parsedToolCall.tool_input);
-        events.push({
-          id: `codex:tool:${row.id}`,
-          schema_version: 3,
-          timestamp,
-          session_id: rootThreadId,
-          hook_event_type: "PostToolUse",
-          cwd: thread.cwd,
-          tool_name: parsedToolCall.tool_name,
-          tool_input: parsedToolCall.tool_input,
-          tool_use_id: parsedToolCall.turn_id ?? parsedToolCall.submission_id ?? `codex-tool-${row.id}`,
-          model: parsedToolCall.model ?? thread.model ?? undefined,
-          agent_id: isRootThread ? undefined : row.thread_id,
-          agent_type: agentType,
-          root_run_id: rootThreadId,
-          parent_run_id: isRootThread ? undefined : parentByChild.get(row.thread_id),
-          branch_kind: isRootThread ? "main" : "subagent",
-          tool_category: classification.tool_category,
-          effect_level: classification.effect_level,
-          collapsed_by_default:
-            classification.effect_level === "inspection_only" ||
-            (!isRootThread && classification.effect_level === "reasoning_or_coordination"),
-          extras: {
-            provider: "codex",
-            codex_log_level: row.level,
-            codex_log_target: row.target,
-          },
-          _raw: {
-            provider: "codex",
-            log: row,
-          },
-        });
-        continue;
-      }
-
-      const error = parseTurnError(row.feedback_log_body);
-      if (!error) continue;
-
-      events.push({
-        id: `codex:error:${row.id}`,
-        schema_version: 3,
-        timestamp,
-        session_id: rootThreadId,
-        hook_event_type: "StopFailure",
-        cwd: thread.cwd,
-        error,
-        model: thread.model ?? undefined,
-        agent_id: isRootThread ? undefined : row.thread_id,
-        agent_type: agentType,
-        root_run_id: rootThreadId,
-        parent_run_id: isRootThread ? undefined : parentByChild.get(row.thread_id),
-        branch_kind: isRootThread ? "main" : "subagent",
-        failure_class: "codex_turn_error",
-        effect_level: "failure_or_anomaly",
-        extras: {
-          provider: "codex",
-          codex_log_level: row.level,
-          codex_log_target: row.target,
-        },
-        _raw: {
-          provider: "codex",
-          log: row,
-        },
-      });
-    }
-
-    events.sort((left, right) => {
-      const timestampCompare = left.timestamp.localeCompare(right.timestamp);
-      return timestampCompare !== 0 ? timestampCompare : left.id.localeCompare(right.id);
-    });
-
-    const activePromptBySession = new Map<string, string>();
-    for (const event of events) {
-      if (event.hook_event_type === "UserPromptSubmit" && event.prompt_segment_id) {
-        activePromptBySession.set(event.session_id, event.prompt_segment_id);
-        continue;
-      }
-
-      const promptSegmentId = activePromptBySession.get(event.session_id);
-      if (promptSegmentId && !event.prompt_segment_id) {
-        event.prompt_segment_id = promptSegmentId;
-      }
-    }
-
-    return events;
-  } catch {
-    return [];
-  } finally {
-    stateDb.close();
-    logsDb.close();
   }
+
+  events.sort((left, right) => {
+    const timestampCompare = left.timestamp.localeCompare(right.timestamp);
+    return timestampCompare !== 0 ? timestampCompare : left.id.localeCompare(right.id);
+  });
+
+  const activePromptBySession = new Map<string, string>();
+  for (const event of events) {
+    if (event.hook_event_type === "UserPromptSubmit" && event.prompt_segment_id) {
+      activePromptBySession.set(event.session_id, event.prompt_segment_id);
+      continue;
+    }
+
+    const promptSegmentId = activePromptBySession.get(event.session_id);
+    if (promptSegmentId && !event.prompt_segment_id) {
+      event.prompt_segment_id = promptSegmentId;
+    }
+  }
+
+  return events;
 }

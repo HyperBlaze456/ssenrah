@@ -39,6 +39,95 @@ function userEntry(
   });
 }
 
+function codexRolloutEntry(entry: Record<string, unknown>): string {
+  return JSON.stringify(entry);
+}
+
+function writeCodexRollout(path: string): void {
+  writeFileSync(
+    path,
+    [
+      codexRolloutEntry({
+        timestamp: "2026-04-05T00:00:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "codex-session",
+          timestamp: "2026-04-05T00:00:00.000Z",
+          cwd: "/repo",
+          source: "cli",
+          model_provider: "openai",
+        },
+      }),
+      codexRolloutEntry({
+        timestamp: "2026-04-05T00:00:01.000Z",
+        type: "event_msg",
+        payload: {
+          type: "user_message",
+          message: "Fix the parser",
+        },
+      }),
+      codexRolloutEntry({
+        timestamp: "2026-04-05T00:00:02.000Z",
+        type: "turn_context",
+        payload: {
+          turn_id: "turn-1",
+          cwd: "/repo",
+          model: "gpt-5.4",
+        },
+      }),
+      codexRolloutEntry({
+        timestamp: "2026-04-05T00:00:03.000Z",
+        type: "response_item",
+        payload: {
+          type: "reasoning",
+          summary: [{ type: "summary_text", text: "**Inspecting transcript structure**" }],
+          content: null,
+          encrypted_content: "opaque",
+        },
+      }),
+      codexRolloutEntry({
+        timestamp: "2026-04-05T00:00:04.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          call_id: "call-1",
+          name: "exec_command",
+          arguments: JSON.stringify({ cmd: "rg transcript harness/src" }),
+        },
+      }),
+      codexRolloutEntry({
+        timestamp: "2026-04-05T00:00:05.000Z",
+        type: "event_msg",
+        payload: {
+          type: "exec_command_end",
+          call_id: "call-1",
+          turn_id: "turn-1",
+          exit_code: 0,
+          aggregated_output: "match",
+        },
+      }),
+      codexRolloutEntry({
+        timestamp: "2026-04-05T00:00:06.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "I found the parser entrypoints." }],
+        },
+      }),
+      codexRolloutEntry({
+        timestamp: "2026-04-05T00:00:07.000Z",
+        type: "event_msg",
+        payload: {
+          type: "task_complete",
+          turn_id: "turn-1",
+          last_agent_message: "I found the parser entrypoints.",
+        },
+      }),
+    ].join("\n"),
+  );
+}
+
 describe("reasoning extractor", () => {
   let tmpDir: string;
 
@@ -213,6 +302,23 @@ describe("reasoning extractor", () => {
     const path = join(tmpDir, "empty.jsonl");
     writeFileSync(path, "");
     expect(extractDecisionChain(path)).toBeNull();
+  });
+
+  it("extracts decision chains from Codex rollout transcripts", () => {
+    const path = join(tmpDir, "codex-rollout.jsonl");
+    writeCodexRollout(path);
+
+    const chain = extractDecisionChain(path);
+    expect(chain).not.toBeNull();
+    expect(chain!.session_id).toBe("codex-session");
+    expect(chain!.prompts).toHaveLength(1);
+    expect(chain!.prompts[0]!.content).toBe("Fix the parser");
+    expect(chain!.steps).toHaveLength(1);
+    expect(chain!.steps[0]!.model).toBe("gpt-5.4");
+    expect(chain!.steps[0]!.thinking).toContain("Inspecting transcript structure");
+    expect(chain!.steps[0]!.reasoning).toContain("I found the parser entrypoints.");
+    expect(chain!.steps[0]!.decisions[0]!.tool_name).toBe("exec_command");
+    expect(chain!.steps[0]!.decisions[0]!.tool_input).toEqual({ cmd: "rg transcript harness/src" });
   });
 
   it("skips non-assistant/non-user entries", () => {

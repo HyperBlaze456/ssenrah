@@ -1,10 +1,12 @@
 /**
- * Cost tracker — calculates session cost from Claude Code transcript files.
+ * Cost tracker — calculates session cost from transcript files.
  *
- * Reads the transcript JSONL (provided by hooks via transcript_path),
- * sums token usage from assistant messages, and applies model-specific pricing.
+ * Supports:
+ * - Claude Code transcripts (assistant message usage blocks)
+ * - Codex rollout transcripts (event_msg token_count snapshots)
  */
 import { readFileSync, existsSync } from "node:fs";
+import { parseCodexRollout } from "./codex-rollout.js";
 import type { AgentEvent } from "./types.js";
 
 /** Token usage breakdown for a single API call. */
@@ -35,10 +37,34 @@ interface ModelPricing {
 }
 
 /**
- * API-equivalent pricing per 1M tokens (March 2026).
- * Used as estimates — Claude Code users may be on flat-rate plans.
+ * API-equivalent pricing per 1M tokens (verified April 5, 2026 against official OpenAI / OpenAI API pricing pages).
+ * Used as estimates — local CLI users may be on flat-rate plans or internal rate cards.
  */
 const MODEL_PRICING: Record<string, ModelPricing> = {
+  "gpt-5.4": {
+    input: 2.5,
+    output: 15,
+    cache_read: 0.25,
+    cache_creation: 0.25,
+  },
+  "gpt-5.4-mini": {
+    input: 0.75,
+    output: 4.5,
+    cache_read: 0.075,
+    cache_creation: 0.075,
+  },
+  "gpt-5.4-nano": {
+    input: 0.2,
+    output: 1.25,
+    cache_read: 0.02,
+    cache_creation: 0.02,
+  },
+  "gpt-5.3-codex": {
+    input: 1.75,
+    output: 14,
+    cache_read: 0.175,
+    cache_creation: 0.175,
+  },
   "claude-opus-4-6": {
     input: 15,
     output: 75,
@@ -90,10 +116,10 @@ function calculateCost(usage: TokenUsage, pricing: ModelPricing): number {
 }
 
 /**
- * Parse a Claude Code transcript file and compute session cost.
+ * Parse a transcript file and compute session cost.
  *
- * Reads all assistant messages, sums their usage fields,
- * and applies model-specific pricing.
+ * For Claude Code, sums assistant-message usage fields.
+ * For Codex rollouts, uses the latest total token snapshot emitted in the transcript.
  *
  * Returns null if the transcript doesn't exist or has no usage data.
  */
@@ -101,6 +127,32 @@ export function calculateSessionCost(
   transcriptPath: string
 ): SessionCost | null {
   if (!existsSync(transcriptPath)) return null;
+
+  const codexRollout = parseCodexRollout(transcriptPath);
+  if (codexRollout?.latest_token_usage) {
+    const latestTurnModel = [...codexRollout.turns].reverse().find((turn) => turn.model && turn.model !== "unknown")?.model;
+    const model = latestTurnModel ?? "unknown";
+    const totals: TokenUsage = {
+      input_tokens: codexRollout.latest_token_usage.input_tokens,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: codexRollout.latest_token_usage.cached_input_tokens,
+      output_tokens: codexRollout.latest_token_usage.output_tokens,
+    };
+    const pricing = getPricing(model);
+    const cost_usd = calculateCost(totals, pricing);
+    const total_tokens =
+      totals.input_tokens +
+      totals.output_tokens +
+      totals.cache_creation_input_tokens +
+      totals.cache_read_input_tokens;
+
+    return {
+      model,
+      ...totals,
+      total_tokens,
+      cost_usd: Math.round(cost_usd * 10000) / 10000,
+    };
+  }
 
   let content: string;
   try {

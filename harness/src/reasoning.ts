@@ -1,5 +1,5 @@
 /**
- * Reasoning extractor — parses Claude Code transcripts to extract
+ * Reasoning extractor — parses transcripts to extract
  * decision chains: thinking → reasoning → tool decisions.
  *
  * V-3: "Log reasoning process and decision paths — the 'why' logging."
@@ -9,6 +9,7 @@
  * We group by message.id to reconstruct full turns.
  */
 import { readFileSync, existsSync } from "node:fs";
+import { parseCodexRollout } from "./codex-rollout.js";
 
 export interface ToolDecision {
   tool_name: string;
@@ -196,6 +197,49 @@ function parseTranscript(transcriptPath: string): TranscriptEntry[] {
 export function extractDecisionChain(
   transcriptPath: string
 ): DecisionChain | null {
+  const codexRollout = parseCodexRollout(transcriptPath);
+  if (codexRollout) {
+    const steps: ReasoningStep[] = codexRollout.turns
+      .map((turn) => {
+        const summaryText = turn.reasoning_summaries.join("\n").trim();
+        const thinking = summaryText || turn.has_encrypted_reasoning
+          ? [summaryText, !summaryText && turn.has_encrypted_reasoning ? "Encrypted reasoning captured in transcript." : null]
+              .filter((value): value is string => Boolean(value))
+              .join("\n")
+          : undefined;
+
+        return {
+          timestamp: turn.timestamp,
+          model: turn.model,
+          thinking,
+          reasoning: turn.assistant_output?.trim() || undefined,
+          decisions: turn.decisions,
+        };
+      })
+      .filter((step) => step.thinking || step.reasoning || step.decisions.length > 0);
+
+    const modelsUsed = [...new Set(steps.map((step) => step.model).filter((model) => model !== "unknown"))];
+    const summary: ChainSummary = {
+      total_turns: steps.length,
+      total_thinking_blocks: steps.filter((step) => step.thinking).length,
+      total_reasoning_blocks: steps.filter((step) => step.reasoning).length,
+      total_decisions: steps.reduce((count, step) => count + step.decisions.length, 0),
+      total_user_prompts: codexRollout.prompts.length,
+      models_used: modelsUsed,
+    };
+
+    return {
+      session_id: codexRollout.session_id,
+      transcript_path: transcriptPath,
+      prompts: codexRollout.prompts.map((prompt) => ({
+        timestamp: prompt.timestamp,
+        content: prompt.content,
+      })),
+      steps,
+      summary,
+    };
+  }
+
   const entries = parseTranscript(transcriptPath);
   if (entries.length === 0) return null;
 

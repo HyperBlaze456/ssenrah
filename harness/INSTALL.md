@@ -3,7 +3,7 @@
 Agent transparency layer for Claude Code and Codex.
 
 - **Claude Code** is captured through hooks into a local JSONL log with automatic secret redaction.
-- **Codex** is auto-ingested from the local `~/.codex` runtime state and log databases. No extra hook installation is required.
+- **Codex** is auto-ingested from the local `~/.codex` runtime state and rollout transcripts under `~/.codex/sessions/`. No extra hook installation is required.
 
 ## Prerequisites
 
@@ -86,6 +86,10 @@ Codex ingestion can be configured with:
 # Point at a non-default Codex home
 SSENRAH_CODEX_DIR=/custom/.codex npx tsx harness/src/cli.ts summary
 
+# Or point directly at the sessions directory / a single rollout transcript
+SSENRAH_CODEX_DIR=/custom/.codex/sessions npx tsx harness/src/cli.ts summary
+SSENRAH_CODEX_DIR=/custom/.codex/sessions/.../rollout-abc.jsonl npx tsx harness/src/cli.ts reasoning
+
 # Disable Codex ingestion entirely
 SSENRAH_INCLUDE_CODEX=0 npx tsx harness/src/cli.ts summary
 ```
@@ -107,13 +111,25 @@ Each event includes: timestamp, session ID, event type, tool name, agent ID, and
 
 ## Cost Tracking
 
-Session cost is calculated from Claude Code transcript files (token usage per API call). The `cost` command reads transcripts directly and applies model-specific pricing.
+Session cost is calculated from transcripts:
 
-Codex sessions currently contribute timeline, task, agent, anomaly, and verification data, but not transcript-derived cost or reasoning yet.
+- **Claude Code**: assistant-message usage blocks in Claude transcripts
+- **Codex**: `token_count` snapshots in rollout transcripts
 
-Supported models: Claude Opus 4.6, Sonnet 4.6, Haiku 4.5. Unknown models fall back to Sonnet pricing.
+The `cost` command reads transcripts directly and applies model-specific pricing.
+
+Supported models include Claude Opus/Sonnet/Haiku, GPT-5.4 family, and GPT-5.3-Codex-family pricing. Unknown models fall back to Sonnet pricing.
 
 Cost is estimated using API-equivalent pricing — actual cost may differ on flat-rate plans.
+
+## Reasoning Extraction
+
+Reasoning is transcript-backed for both providers:
+
+- **Claude Code**: structured thinking / reasoning / tool-use blocks
+- **Codex**: rollout turn contexts, reasoning summaries when present, encrypted-reasoning markers, tool calls, and final assistant outputs
+
+Codex encrypted reasoning is preserved only as an indicator unless the transcript includes a plaintext summary.
 
 ## Escalation Rules
 
@@ -159,4 +175,4 @@ cd harness/
 npm test
 ```
 
-100 tests across 9 test files: redaction, hook handler, Codex ingestion, CLI, cost tracking, escalation, reasoning extraction, anomaly detection, and session verification.
+116 tests across 10 test files: redaction, hook handler, Codex ingestion, CLI, cost tracking, escalation, reasoning extraction, anomaly detection, and session verification.
