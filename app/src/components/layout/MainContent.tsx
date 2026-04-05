@@ -53,11 +53,20 @@ export function MainContent() {
   const activePanel = useUiStore((s) => s.activePanel);
   const activeScope = useUiStore((s) => s.activeScope);
   const isMonitor = isMonitorPanel(activePanel);
+  const isImmersiveMonitor = activePanel === "run_trace";
   const panel =
     PANELS.find((p) => p.id === activePanel) ??
     MONITOR_PANELS.find((p) => p.id === activePanel);
   const readOnly = activeScope === "managed";
   const PanelComponent = PANEL_COMPONENTS[activePanel];
+
+  if (isImmersiveMonitor) {
+    return (
+      <main className="flex flex-1 overflow-hidden">
+        {PanelComponent ? <PanelComponent /> : <PanelPlaceholder panelId={activePanel} />}
+      </main>
+    );
+  }
 
   return (
     <main className="flex flex-1 flex-col overflow-hidden">

@@ -10,6 +10,7 @@ interface UiStore {
 
   setPanel: (panel: PanelId) => void;
   setScope: (scope: ConfigScope) => void;
+  setSidebarCollapsed: (collapsed: boolean) => void;
   toggleSidebar: () => void;
   toggleEffectiveConfig: () => void;
   addConflict: (conflict: ConflictInfo) => void;
@@ -25,6 +26,7 @@ export const useUiStore = create<UiStore>((set) => ({
 
   setPanel: (panel) => set({ activePanel: panel }),
   setScope: (scope) => set({ activeScope: scope }),
+  setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   toggleEffectiveConfig: () => set((s) => ({ effectiveConfigExpanded: !s.effectiveConfigExpanded })),
   addConflict: (conflict) => set((s) => ({ conflicts: [...s.conflicts, conflict] })),
