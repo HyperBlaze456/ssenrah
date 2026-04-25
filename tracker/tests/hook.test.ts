@@ -211,4 +211,179 @@ describe("hook handler", () => {
     expect(event.effect_level).toBe("inspection_only");
     expect(event.collapsed_by_default).toBe(true);
   }, 30000);
+
+  it("captures UserPromptExpansion (slash command expansion) fields", () => {
+    runHookWithStdin(
+      JSON.stringify({
+        session_id: "session-expansion",
+        transcript_path: "/tmp/expansion.jsonl",
+        cwd: "/repo",
+        hook_event_name: "UserPromptExpansion",
+        expansion_type: "slash_command",
+        command_name: "review",
+        command_args: "--branch main",
+        command_source: ".claude/commands/review.md",
+        prompt: "expanded content",
+      }),
+    );
+
+    const event = readEvents()[0]!;
+    expect(event.hook_event_type).toBe("UserPromptExpansion");
+    expect(event.expansion_type).toBe("slash_command");
+    expect(event.command_name).toBe("review");
+    expect(event.command_args).toBe("--branch main");
+    expect(event.command_source).toBe(".claude/commands/review.md");
+    expect(event.prompt).toBe("expanded content");
+    expect(event.tool_category).toBe("coordination");
+  }, 30000);
+
+  it("captures PostToolBatch with the parallel tool_calls array", () => {
+    runHookWithStdin(
+      JSON.stringify({
+        session_id: "session-batch",
+        transcript_path: "/tmp/batch.jsonl",
+        cwd: "/repo",
+        hook_event_name: "PostToolBatch",
+        tool_calls: [
+          { tool_name: "Read", tool_use_id: "tu_a" },
+          { tool_name: "Grep", tool_use_id: "tu_b" },
+        ],
+      }),
+    );
+
+    const event = readEvents()[0]!;
+    expect(event.hook_event_type).toBe("PostToolBatch");
+    expect(Array.isArray(event.tool_calls)).toBe(true);
+    expect((event.tool_calls as Array<Record<string, unknown>>)).toHaveLength(2);
+  }, 30000);
+
+  it("captures PermissionDenied as a safety/policy event", () => {
+    runHookWithStdin(
+      JSON.stringify({
+        session_id: "session-deny",
+        transcript_path: "/tmp/deny.jsonl",
+        cwd: "/repo",
+        hook_event_name: "PermissionDenied",
+        tool_name: "Bash",
+        tool_input: { command: "rm -rf /" },
+      }),
+    );
+
+    const event = readEvents()[0]!;
+    expect(event.hook_event_type).toBe("PermissionDenied");
+    expect(event.effect_level).toBe("safety_or_policy");
+  }, 30000);
+
+  it("captures Stop with stop_reason and StopFailure with error_type/error_message", () => {
+    runHookWithStdin(
+      JSON.stringify({
+        session_id: "session-stop",
+        transcript_path: "/tmp/stop.jsonl",
+        cwd: "/repo",
+        hook_event_name: "Stop",
+        stop_reason: "end_turn",
+      }),
+    );
+
+    runHookWithStdin(
+      JSON.stringify({
+        session_id: "session-stop",
+        transcript_path: "/tmp/stop.jsonl",
+        cwd: "/repo",
+        hook_event_name: "StopFailure",
+        error_type: "rate_limit",
+        error_message: "rate limit exceeded",
+      }),
+    );
+
+    const events = readEvents();
+    const stop = events.find((event) => event.hook_event_type === "Stop")!;
+    const stopFailure = events.find((event) => event.hook_event_type === "StopFailure")!;
+    expect(stop.stop_reason).toBe("end_turn");
+    expect(stop.outcome).toBe("completed");
+    expect(stopFailure.error_type).toBe("rate_limit");
+    expect(stopFailure.error_message).toBe("rate limit exceeded");
+    expect(stopFailure.outcome).toBe("failed");
+  }, 60000);
+
+  it("captures SessionEnd exit_reason, FileChanged change_type, ConfigChange changed_keys", () => {
+    runHookWithStdin(
+      JSON.stringify({
+        session_id: "session-env",
+        transcript_path: "/tmp/env.jsonl",
+        cwd: "/repo",
+        hook_event_name: "SessionEnd",
+        exit_reason: "logout",
+      }),
+    );
+
+    runHookWithStdin(
+      JSON.stringify({
+        session_id: "session-env",
+        transcript_path: "/tmp/env.jsonl",
+        cwd: "/repo",
+        hook_event_name: "FileChanged",
+        file_path: "/repo/.envrc",
+        change_type: "modified",
+      }),
+    );
+
+    runHookWithStdin(
+      JSON.stringify({
+        session_id: "session-env",
+        transcript_path: "/tmp/env.jsonl",
+        cwd: "/repo",
+        hook_event_name: "ConfigChange",
+        config_source: "user_settings",
+        changed_keys: ["hooks.PostToolUse", "hooks.Stop"],
+      }),
+    );
+
+    const events = readEvents();
+    const sessionEnd = events.find((event) => event.hook_event_type === "SessionEnd")!;
+    const fileChanged = events.find((event) => event.hook_event_type === "FileChanged")!;
+    const configChange = events.find((event) => event.hook_event_type === "ConfigChange")!;
+
+    expect(sessionEnd.exit_reason).toBe("logout");
+    expect(fileChanged.change_type).toBe("modified");
+    expect(configChange.changed_keys).toEqual(["hooks.PostToolUse", "hooks.Stop"]);
+  }, 60000);
+
+  it("normalizes mcp_server / task_name aliases", () => {
+    runHookWithStdin(
+      JSON.stringify({
+        session_id: "session-alias",
+        transcript_path: "/tmp/alias.jsonl",
+        cwd: "/repo",
+        hook_event_name: "Elicitation",
+        mcp_server: "filesystem",
+        tool_name: "mcp__filesystem__write_file",
+        elicitation_form: { fields: [{ name: "path", required: true }] },
+      }),
+    );
+
+    runHookWithStdin(
+      JSON.stringify({
+        session_id: "session-alias",
+        transcript_path: "/tmp/alias.jsonl",
+        cwd: "/repo",
+        hook_event_name: "TaskCompleted",
+        task_id: "t_1",
+        task_name: "Implement feature",
+      }),
+    );
+
+    const events = readEvents();
+    const elicitation = events.find((event) => event.hook_event_type === "Elicitation")!;
+    const task = events.find((event) => event.hook_event_type === "TaskCompleted")!;
+
+    // mcp_server is the new key — it should also populate the legacy mcp_server_name alias.
+    expect(elicitation.mcp_server).toBe("filesystem");
+    expect(elicitation.mcp_server_name).toBe("filesystem");
+    expect((elicitation.elicitation_form as Record<string, unknown>).fields).toBeDefined();
+
+    // task_name is the new key — it should also populate the legacy task_subject alias.
+    expect(task.task_name).toBe("Implement feature");
+    expect(task.task_subject).toBe("Implement feature");
+  }, 60000);
 });

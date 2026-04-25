@@ -6,10 +6,13 @@ export type HookEventType =
   | "SessionStart"
   | "InstructionsLoaded"
   | "UserPromptSubmit"
+  | "UserPromptExpansion"
   | "PreToolUse"
   | "PermissionRequest"
+  | "PermissionDenied"
   | "PostToolUse"
   | "PostToolUseFailure"
+  | "PostToolBatch"
   | "Notification"
   | "SubagentStart"
   | "SubagentStop"
@@ -114,6 +117,7 @@ export interface AgentEvent {
   // Task / prompt fields
   task_id?: string;
   task_subject?: string;
+  task_name?: string;
   task_description?: string;
   prompt_segment_id?: string;
 
@@ -136,13 +140,22 @@ export interface AgentEvent {
 
   // Notification fields
   notification_type?: string;
+  notification_message?: string;
   title?: string;
   message?: string;
   prompt?: string;
 
+  // UserPromptExpansion (slash command / mcp prompt expansion)
+  expansion_type?: "slash_command" | "mcp_prompt" | string;
+  command_name?: string;
+  command_args?: string;
+  command_source?: string;
+
   // Session lifecycle
   source?: string;
   reason?: string;
+  stop_reason?: string;
+  exit_reason?: string;
   old_cwd?: string;
   new_cwd?: string;
   event?: string;
@@ -153,8 +166,11 @@ export interface AgentEvent {
   trigger?: string;
   compact_summary?: string;
 
-  // MCP / Elicitation
+  // MCP / Elicitation (`mcp_server` is the new key, `mcp_server_name` is preserved for back-compat)
+  mcp_server?: string;
   mcp_server_name?: string;
+  elicitation_form?: Record<string, unknown>;
+  user_response?: Record<string, unknown>;
   requested_schema?: Record<string, unknown>;
   mode?: string;
   url?: string;
@@ -162,19 +178,34 @@ export interface AgentEvent {
   content?: unknown;
   elicitation_id?: string;
 
-  // Stop events
+  // Permissions
+  permission_suggestions?: Array<Record<string, unknown>>;
+
+  // Stop / failure events
   stop_hook_active?: boolean;
   last_assistant_message?: string;
   error_details?: unknown;
+  error_type?: string;
+  error_message?: string;
+  is_interrupt?: boolean;
+
+  // PostToolBatch
+  tool_calls?: Array<Record<string, unknown>>;
 
   // Config changes
   config_source?: string;
+  changed_keys?: string[];
   file_path?: string;
+  change_type?: "created" | "modified" | "deleted" | string;
   memory_type?: string;
   load_reason?: string;
   globs?: string[];
   trigger_file_path?: string;
   parent_file_path?: string;
+
+  // Worktree
+  isolation_mode?: string;
+  subagent_id?: string;
 
   // Cost (from Claude Code's built-in cost tracking, added by our adapter)
   cost_usd?: number;

@@ -8,7 +8,8 @@ export type {
 } from "./types.js";
 
 export { redactString, redactObject, redactPayload } from "./redact.js";
-export { loadCodexEvents } from "./codex.js";
+export { getCodexStatus, loadCodexEvents, syncCodexEvents } from "./codex.js";
+export type { CodexStatusReport, CodexSyncOptions, CodexSyncResult } from "./codex.js";
 export { calculateSessionCost, formatCost, formatTokens } from "./cost.js";
 export type { SessionCost, TokenUsage } from "./cost.js";
 export {

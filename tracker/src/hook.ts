@@ -54,6 +54,7 @@ const NORMALIZED_KEYS = new Set([
   "branch_kind",
   "task_id",
   "task_subject",
+  "task_name",
   "task_description",
   "prompt_segment_id",
   "duration_ms",
@@ -65,21 +66,40 @@ const NORMALIZED_KEYS = new Set([
   "approval_state",
   "approval_request_id",
   "policy_name",
+  "permission_suggestions",
   "teammate_name",
   "team_name",
+  "teammate_type",
   "notification_type",
+  "notification_message",
   "title",
   "message",
   "prompt",
+  "expansion_type",
+  "command_name",
+  "command_args",
+  "command_source",
   "source",
   "reason",
+  "stop_reason",
+  "exit_reason",
   "trigger",
   "compact_summary",
+  "mcp_server",
   "mcp_server_name",
+  "elicitation_form",
+  "user_response",
   "stop_hook_active",
   "last_assistant_message",
+  "error_details",
+  "error_type",
+  "error_message",
+  "is_interrupt",
+  "tool_calls",
   "config_source",
+  "changed_keys",
   "file_path",
+  "change_type",
   "memory_type",
   "load_reason",
   "globs",
@@ -89,6 +109,8 @@ const NORMALIZED_KEYS = new Set([
   "new_cwd",
   "event",
   "worktree_path",
+  "isolation_mode",
+  "subagent_id",
   "agent_transcript_path",
   "requested_schema",
   "mode",
@@ -96,7 +118,6 @@ const NORMALIZED_KEYS = new Set([
   "action",
   "content",
   "elicitation_id",
-  "error_details",
   "cost_usd",
 ]);
 
@@ -153,14 +174,20 @@ function deriveToolCategory(payload: Record<string, unknown>): ToolCategory | un
     const hookEventType = String(payload.hook_event_name ?? "");
     if (
       hookEventType === "UserPromptSubmit" ||
+      hookEventType === "UserPromptExpansion" ||
       hookEventType === "TaskCreated" ||
       hookEventType === "TaskCompleted" ||
       hookEventType === "SubagentStart" ||
-      hookEventType === "SubagentStop"
+      hookEventType === "SubagentStop" ||
+      hookEventType === "PostToolBatch"
     ) {
       return "coordination";
     }
-    if (hookEventType === "PermissionRequest" || hookEventType.startsWith("Elicitation")) {
+    if (
+      hookEventType === "PermissionRequest" ||
+      hookEventType === "PermissionDenied" ||
+      hookEventType.startsWith("Elicitation")
+    ) {
       return "approval";
     }
     return undefined;
@@ -190,6 +217,7 @@ function deriveEffectLevel(payload: Record<string, unknown>, toolCategory: ToolC
   }
   if (
     hookEventType === "PermissionRequest" ||
+    hookEventType === "PermissionDenied" ||
     hookEventType === "Elicitation" ||
     hookEventType === "ElicitationResult"
   ) {
@@ -207,13 +235,15 @@ function deriveEffectLevel(payload: Record<string, unknown>, toolCategory: ToolC
   }
   if (
     hookEventType === "UserPromptSubmit" ||
+    hookEventType === "UserPromptExpansion" ||
     hookEventType === "TaskCreated" ||
     hookEventType === "TaskCompleted" ||
     hookEventType === "SubagentStart" ||
     hookEventType === "SubagentStop" ||
     hookEventType === "SessionStart" ||
     hookEventType === "SessionEnd" ||
-    hookEventType === "Stop"
+    hookEventType === "Stop" ||
+    hookEventType === "PostToolBatch"
   ) {
     return "reasoning_or_coordination";
   }
@@ -236,15 +266,15 @@ function deriveOutcome(payload: Record<string, unknown>): RunOutcome | undefined
   const hookEventType = String(payload.hook_event_name ?? "");
   if (hookEventType === "PostToolUseFailure" || hookEventType === "StopFailure") return "failed";
   if (hookEventType === "SubagentStop") {
-    const reason = String(payload.reason ?? "").toLowerCase();
-    if (reason.includes("cancel")) return "cancelled";
-    if (reason.includes("fail") || reason.includes("error")) return "failed";
+    const reasonText = String(payload.stop_reason ?? payload.reason ?? "").toLowerCase();
+    if (reasonText.includes("cancel")) return "cancelled";
+    if (reasonText.includes("fail") || reasonText.includes("error")) return "failed";
     return "completed";
   }
   if (hookEventType === "SessionEnd" || hookEventType === "TaskCompleted") return "completed";
   if (hookEventType === "Stop") {
-    const reason = String(payload.reason ?? "").toLowerCase();
-    if (reason.includes("cancel")) return "cancelled";
+    const reasonText = String(payload.stop_reason ?? payload.reason ?? "").toLowerCase();
+    if (reasonText.includes("cancel")) return "cancelled";
     return "completed";
   }
   if (hookEventType === "SubagentStart" || hookEventType === "TaskCreated" || hookEventType === "SessionStart") {
@@ -262,6 +292,19 @@ function toAgentEvent(payload: Record<string, unknown>): AgentEvent {
   const failureClass =
     (payload.failure_class as string | undefined) ??
     (String(payload.hook_event_name ?? "").includes("Failure") ? String(payload.hook_event_name) : undefined);
+
+  // task_name is the new field; task_subject is the legacy alias — accept either.
+  const taskSubject = (payload.task_subject as string | undefined) ?? (payload.task_name as string | undefined);
+  const taskName = (payload.task_name as string | undefined) ?? (payload.task_subject as string | undefined);
+
+  // mcp_server is the new field; mcp_server_name is the legacy alias.
+  const mcpServer = (payload.mcp_server as string | undefined) ?? (payload.mcp_server_name as string | undefined);
+  const mcpServerName = (payload.mcp_server_name as string | undefined) ?? (payload.mcp_server as string | undefined);
+
+  // notification_message is the new field; message is shared with other event types.
+  const notificationMessage =
+    (payload.notification_message as string | undefined) ??
+    (payload.hook_event_name === "Notification" ? (payload.message as string | undefined) : undefined);
 
   return {
     id: randomUUID(),
@@ -292,7 +335,8 @@ function toAgentEvent(payload: Record<string, unknown>): AgentEvent {
 
     // Task fields
     task_id: payload.task_id as string | undefined,
-    task_subject: payload.task_subject as string | undefined,
+    task_subject: taskSubject,
+    task_name: taskName,
     task_description: payload.task_description as string | undefined,
     prompt_segment_id: payload.prompt_segment_id as string | undefined,
 
@@ -309,6 +353,7 @@ function toAgentEvent(payload: Record<string, unknown>): AgentEvent {
     approval_state: payload.approval_state as string | undefined,
     approval_request_id: payload.approval_request_id as string | undefined,
     policy_name: payload.policy_name as string | undefined,
+    permission_suggestions: payload.permission_suggestions as Array<Record<string, unknown>> | undefined,
 
     // Teammate fields
     teammate_name: payload.teammate_name as string | undefined,
@@ -316,25 +361,39 @@ function toAgentEvent(payload: Record<string, unknown>): AgentEvent {
 
     // Notification
     notification_type: payload.notification_type as string | undefined,
+    notification_message: notificationMessage,
     title: payload.title as string | undefined,
     message: payload.message as string | undefined,
     prompt: payload.prompt as string | undefined,
 
+    // Slash command / mcp prompt expansion
+    expansion_type: payload.expansion_type as string | undefined,
+    command_name: payload.command_name as string | undefined,
+    command_args: payload.command_args as string | undefined,
+    command_source: payload.command_source as string | undefined,
+
     // Session lifecycle
     source: payload.source as string | undefined,
     reason: payload.reason as string | undefined,
+    stop_reason: payload.stop_reason as string | undefined,
+    exit_reason: payload.exit_reason as string | undefined,
     old_cwd: payload.old_cwd as string | undefined,
     new_cwd: payload.new_cwd as string | undefined,
     event: payload.event as string | undefined,
     worktree_path: payload.worktree_path as string | undefined,
+    isolation_mode: payload.isolation_mode as string | undefined,
+    subagent_id: payload.subagent_id as string | undefined,
     agent_transcript_path: payload.agent_transcript_path as string | undefined,
 
     // Compact
     trigger: payload.trigger as string | undefined,
     compact_summary: payload.compact_summary as string | undefined,
 
-    // MCP
-    mcp_server_name: payload.mcp_server_name as string | undefined,
+    // MCP / Elicitation
+    mcp_server: mcpServer,
+    mcp_server_name: mcpServerName,
+    elicitation_form: payload.elicitation_form as Record<string, unknown> | undefined,
+    user_response: payload.user_response as Record<string, unknown> | undefined,
     requested_schema: payload.requested_schema as Record<string, unknown> | undefined,
     mode: payload.mode as string | undefined,
     url: payload.url as string | undefined,
@@ -342,15 +401,23 @@ function toAgentEvent(payload: Record<string, unknown>): AgentEvent {
     content: payload.content as unknown,
     elicitation_id: payload.elicitation_id as string | undefined,
 
-    // Stop
+    // Stop / failure
     stop_hook_active: payload.stop_hook_active as boolean | undefined,
     last_assistant_message: payload.last_assistant_message as string | undefined,
     error_details: payload.error_details as unknown,
+    error_type: payload.error_type as string | undefined,
+    error_message: payload.error_message as string | undefined,
+    is_interrupt: payload.is_interrupt as boolean | undefined,
+
+    // Batched tool resolution
+    tool_calls: payload.tool_calls as Array<Record<string, unknown>> | undefined,
 
     // Config
     config_source:
       (payload.config_source as string | undefined) ?? (payload.source as string | undefined),
+    changed_keys: payload.changed_keys as string[] | undefined,
     file_path: payload.file_path as string | undefined,
+    change_type: payload.change_type as string | undefined,
     memory_type: payload.memory_type as string | undefined,
     load_reason: payload.load_reason as string | undefined,
     globs: payload.globs as string[] | undefined,

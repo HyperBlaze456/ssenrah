@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { parseCodexRollout } from "./codex-rollout.js";
@@ -33,6 +33,26 @@ interface CodexHomeResolution {
   codex_dir: string;
   sessions_dir?: string;
   rollout_files: string[];
+}
+
+export interface CodexStatusReport {
+  enabled: boolean;
+  resolved: boolean;
+  codex_dir?: string;
+  sessions_dir?: string;
+  state_db?: string;
+  rollout_count: number;
+  thread_count: number;
+  latest_thread_updated_at?: string;
+  recent_threads: Array<{
+    id: string;
+    title: string;
+    model: string | null;
+    updated_at: string;
+    archived: boolean;
+    rollout_path: string | null;
+  }>;
+  notes: string[];
 }
 
 const DEFAULT_CODEX_DIR = join(process.env.HOME ?? "~", ".codex");
@@ -670,4 +690,177 @@ export function loadCodexEvents(
   }
 
   return events;
+}
+
+/**
+ * Diagnostic snapshot of where Codex data is being read from and what it looks like.
+ *
+ * Used by the `ssenrah codex status` CLI command to surface install state, schema version
+ * (via the highest `state_N.sqlite` we found), and a peek at the most recent threads —
+ * without paying the full event-construction cost.
+ */
+export function getCodexStatus(
+  codexInput: string = process.env.SSENRAH_CODEX_DIR ?? DEFAULT_CODEX_DIR,
+): CodexStatusReport {
+  const enabled = includeCodexByDefault();
+  const notes: string[] = [];
+
+  if (!enabled) {
+    notes.push("SSENRAH_INCLUDE_CODEX is set to a falsey value — Codex ingestion is disabled.");
+  }
+
+  const resolution = resolveCodexHome(codexInput);
+  if (!resolution) {
+    return {
+      enabled,
+      resolved: false,
+      rollout_count: 0,
+      thread_count: 0,
+      recent_threads: [],
+      notes: [
+        ...notes,
+        `Could not resolve a Codex home from "${codexInput}". Install Codex or set SSENRAH_CODEX_DIR to point at a .codex directory, sessions directory, or rollout JSONL file.`,
+      ],
+    };
+  }
+
+  const stateDbPath = pickLatestSqliteFile(resolution.codex_dir, "state");
+  if (!stateDbPath) {
+    notes.push("No state_*.sqlite file found — relying on rollout transcripts only.");
+  }
+
+  let threadCount = 0;
+  const recentThreads: CodexStatusReport["recent_threads"] = [];
+  let latestThreadUpdatedAt: string | undefined;
+
+  if (stateDbPath) {
+    const stateDb = new Database(stateDbPath, { readonly: true, fileMustExist: true });
+    try {
+      const rows = stateDb
+        .prepare(`
+          select id, rollout_path, title, model, updated_at, archived
+          from threads
+          order by updated_at desc
+        `)
+        .all() as Array<{
+          id: string;
+          rollout_path: string | null;
+          title: string | null;
+          model: string | null;
+          updated_at: number;
+          archived: number;
+        }>;
+
+      threadCount = rows.length;
+      if (rows.length > 0) latestThreadUpdatedAt = toIsoFromSeconds(rows[0]!.updated_at);
+      for (const row of rows.slice(0, 5)) {
+        recentThreads.push({
+          id: row.id,
+          title: row.title ?? "",
+          model: row.model,
+          updated_at: toIsoFromSeconds(row.updated_at),
+          archived: Boolean(row.archived),
+          rollout_path: row.rollout_path,
+        });
+      }
+    } finally {
+      stateDb.close();
+    }
+  }
+
+  return {
+    enabled,
+    resolved: true,
+    codex_dir: resolution.codex_dir,
+    sessions_dir: resolution.sessions_dir,
+    state_db: stateDbPath ?? undefined,
+    rollout_count: resolution.rollout_files.length,
+    thread_count: threadCount,
+    latest_thread_updated_at: latestThreadUpdatedAt,
+    recent_threads: recentThreads,
+    notes,
+  };
+}
+
+export interface CodexSyncOptions {
+  /** Override the Codex home (path to ~/.codex, sessions dir, or a single rollout). */
+  codexInput?: string;
+  /** Override the JSONL log file ssenrah writes into. Defaults to `~/.ssenrah/events/events.jsonl` (or `$SSENRAH_LOG_DIR/events.jsonl`). */
+  logFile?: string;
+  /** ISO timestamp — only events at or after this time are written. */
+  since?: string;
+}
+
+export interface CodexSyncResult {
+  appended: number;
+  skipped_existing: number;
+  skipped_filtered: number;
+  total_codex_events: number;
+  log_file: string;
+}
+
+/**
+ * Persist Codex events into the harness JSONL log.
+ *
+ * Idempotent: events are keyed by their stable `id` (e.g. `codex:tool:<thread>:<call>`),
+ * so re-running `sync` only appends events that aren't already in the log.
+ */
+export function syncCodexEvents(options: CodexSyncOptions = {}): CodexSyncResult {
+  const logFile =
+    options.logFile ??
+    join(
+      process.env.SSENRAH_LOG_DIR ?? join(process.env.HOME ?? "~", ".ssenrah", "events"),
+      "events.jsonl",
+    );
+
+  const events = loadCodexEvents(options.codexInput);
+
+  const seen = new Set<string>();
+  if (existsSync(logFile)) {
+    for (const line of readFileSync(logFile, "utf-8").split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const parsed = JSON.parse(line) as { id?: string };
+        if (typeof parsed.id === "string") seen.add(parsed.id);
+      } catch {
+        // Ignore malformed lines — they aren't ours to repair from this command.
+      }
+    }
+  }
+
+  const sinceMs = options.since ? new Date(options.since).getTime() : null;
+  if (sinceMs !== null && Number.isNaN(sinceMs)) {
+    throw new Error(`Invalid --since timestamp: ${options.since}`);
+  }
+
+  let appended = 0;
+  let skippedExisting = 0;
+  let skippedFiltered = 0;
+
+  if (!existsSync(dirname(logFile))) {
+    mkdirSync(dirname(logFile), { recursive: true });
+  }
+
+  for (const event of events) {
+    if (sinceMs !== null && new Date(event.timestamp).getTime() < sinceMs) {
+      skippedFiltered += 1;
+      continue;
+    }
+    if (seen.has(event.id)) {
+      skippedExisting += 1;
+      continue;
+    }
+
+    appendFileSync(logFile, JSON.stringify(event) + "\n", "utf-8");
+    seen.add(event.id);
+    appended += 1;
+  }
+
+  return {
+    appended,
+    skipped_existing: skippedExisting,
+    skipped_filtered: skippedFiltered,
+    total_codex_events: events.length,
+    log_file: logFile,
+  };
 }

@@ -17,7 +17,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { detectAnomalies, formatAnomalies } from "./anomaly.js";
-import { loadCodexEvents } from "./codex.js";
+import { getCodexStatus, loadCodexEvents, syncCodexEvents } from "./codex.js";
 import { calculateSessionCost, formatCost, formatTokens } from "./cost.js";
 import { extractDecisionChain, formatDecisionChain } from "./reasoning.js";
 import {
@@ -436,6 +436,81 @@ function cmdTasks(opts: { session?: string }): void {
   console.log(formatTaskSummaries(summarizeTasks(loadEvents(), opts)));
 }
 
+function cmdCodex(args: string[]): void {
+  const sub = args[0];
+  if (!sub || sub === "help" || sub === "--help") {
+    console.log("Usage: ssenrah codex <status | sync>");
+    console.log("");
+    console.log("  status                Show where Codex data is being read from and what's there");
+    console.log("  sync                  Import all detected Codex sessions into the JSONL log");
+    console.log("    --since ISO_TIME    Only sync events at or after the given timestamp");
+    console.log("    --codex-dir PATH    Override SSENRAH_CODEX_DIR for this run");
+    console.log("    --log PATH          Override the destination JSONL log file");
+    return;
+  }
+
+  if (sub === "status") {
+    let codexInput: string | undefined;
+    for (let i = 1; i < args.length; i += 1) {
+      if (args[i] === "--codex-dir" && args[i + 1]) codexInput = args[++i];
+    }
+    const status = getCodexStatus(codexInput);
+    console.log("ssenrah — Codex status");
+    console.log("======================");
+    console.log(`  Enabled:                  ${status.enabled ? "yes" : "no"}`);
+    console.log(`  Resolved Codex home:      ${status.resolved ? "yes" : "no"}`);
+    if (status.codex_dir) console.log(`  Codex dir:                ${status.codex_dir}`);
+    if (status.sessions_dir) console.log(`  Sessions dir:             ${status.sessions_dir}`);
+    if (status.state_db) console.log(`  State DB:                 ${status.state_db}`);
+    console.log(`  Rollout files:            ${status.rollout_count}`);
+    console.log(`  Threads (state DB):       ${status.thread_count}`);
+    if (status.latest_thread_updated_at) {
+      console.log(`  Latest thread updated:    ${status.latest_thread_updated_at}`);
+    }
+    if (status.recent_threads.length > 0) {
+      console.log("");
+      console.log("  Recent threads:");
+      for (const thread of status.recent_threads) {
+        const archived = thread.archived ? " [archived]" : "";
+        console.log(`    ${thread.id.slice(0, 12)}  ${thread.model ?? "?".padEnd(20)}  ${thread.updated_at}${archived}`);
+        if (thread.title) console.log(`      ${truncate(thread.title, 70)}`);
+      }
+    }
+    if (status.notes.length > 0) {
+      console.log("");
+      console.log("  Notes:");
+      for (const note of status.notes) console.log(`    - ${note}`);
+    }
+    return;
+  }
+
+  if (sub === "sync") {
+    let since: string | undefined;
+    let codexInput: string | undefined;
+    let logFile: string | undefined;
+    for (let i = 1; i < args.length; i += 1) {
+      if (args[i] === "--since" && args[i + 1]) since = args[++i];
+      else if (args[i] === "--codex-dir" && args[i + 1]) codexInput = args[++i];
+      else if (args[i] === "--log" && args[i + 1]) logFile = args[++i];
+    }
+
+    const result = syncCodexEvents({ codexInput, logFile, since });
+    console.log("ssenrah — Codex sync");
+    console.log("====================");
+    console.log(`  Log file:                 ${result.log_file}`);
+    console.log(`  Detected Codex events:    ${result.total_codex_events}`);
+    console.log(`  Appended (new):           ${result.appended}`);
+    console.log(`  Skipped (already synced): ${result.skipped_existing}`);
+    if (result.skipped_filtered > 0) {
+      console.log(`  Skipped (--since filter): ${result.skipped_filtered}`);
+    }
+    return;
+  }
+
+  console.log(`Unknown codex subcommand: ${sub}`);
+  console.log("Try: ssenrah codex --help");
+}
+
 function cmdTrace(opts: { session?: string; prompt?: string }): void {
   const events = loadEvents();
   const sessions = summarizeSessions(events);
@@ -564,8 +639,12 @@ function main(): void {
       break;
     }
 
+    case "codex":
+      cmdCodex(args.slice(1));
+      break;
+
     default:
-      console.log("Usage: ssenrah [summary | events | sessions | timeline | trace | agents | tasks | cost | reasoning | anomalies | verify | tail]");
+      console.log("Usage: ssenrah [summary | events | sessions | timeline | trace | agents | tasks | cost | reasoning | anomalies | verify | tail | codex]");
       console.log("");
       console.log("Commands:");
       console.log("  summary              Activity overview (default)");
@@ -595,6 +674,9 @@ function main(): void {
       console.log("  verify               Session verification report");
       console.log("    --session ID       Verify a specific session");
       console.log("  tail                 Follow new events in real-time");
+      console.log("  codex                Codex bridge (status / sync into the JSONL log)");
+      console.log("    status             Show resolved Codex paths, schema, and recent threads");
+      console.log("    sync               Append all detected Codex events into ~/.ssenrah/events.jsonl");
       break;
   }
 }

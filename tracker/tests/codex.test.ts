@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import Database from "better-sqlite3";
-import { loadCodexEvents } from "../src/codex.js";
+import { getCodexStatus, loadCodexEvents, syncCodexEvents } from "../src/codex.js";
 
 const CLI_SCRIPT = join(import.meta.dirname, "..", "src", "cli.ts");
 const HARNESS_DIR = join(import.meta.dirname, "..");
@@ -391,5 +391,70 @@ describe("codex support", () => {
     expect(output).toContain("exec_command");
     expect(output).toContain("Est. cost:");
     expect(output).not.toContain("No events recorded");
+  });
+
+  it("reports Codex install state via getCodexStatus", () => {
+    const status = getCodexStatus(testCodexDir);
+    expect(status.enabled).toBe(true);
+    expect(status.resolved).toBe(true);
+    expect(status.codex_dir).toBe(testCodexDir);
+    expect(status.thread_count).toBe(2);
+    expect(status.rollout_count).toBe(2);
+    expect(status.recent_threads.length).toBeGreaterThan(0);
+    expect(status.recent_threads.some((thread) => thread.id === "root-thread")).toBe(true);
+  });
+
+  it("returns a clear notes-only status when Codex isn't installed", () => {
+    const status = getCodexStatus(join(testRootDir, "no-such-codex"));
+    expect(status.resolved).toBe(false);
+    expect(status.notes.join(" ")).toMatch(/Codex/);
+  });
+
+  it("syncs Codex events into the JSONL log idempotently", () => {
+    const logFile = join(testLogDir, "events.jsonl");
+
+    const first = syncCodexEvents({ codexInput: testCodexDir, logFile });
+    expect(first.appended).toBeGreaterThan(0);
+    expect(first.skipped_existing).toBe(0);
+
+    const writtenLines = readFileSync(logFile, "utf-8").split("\n").filter(Boolean);
+    expect(writtenLines.length).toBe(first.appended);
+
+    // A second sync should be a no-op against the same log.
+    const second = syncCodexEvents({ codexInput: testCodexDir, logFile });
+    expect(second.appended).toBe(0);
+    expect(second.skipped_existing).toBe(first.appended);
+
+    const allEvents = writtenLines.map((line) => JSON.parse(line) as { hook_event_type: string });
+    expect(allEvents.some((event) => event.hook_event_type === "SessionStart")).toBe(true);
+    expect(allEvents.some((event) => event.hook_event_type === "SubagentStart")).toBe(true);
+    expect(allEvents.some((event) => event.hook_event_type === "PostToolUse")).toBe(true);
+  });
+
+  it("respects --since when syncing Codex events", () => {
+    const logFile = join(testLogDir, "events-since.jsonl");
+    const result = syncCodexEvents({
+      codexInput: testCodexDir,
+      logFile,
+      since: "2026-04-05T00:00:11.000Z",
+    });
+
+    expect(result.skipped_filtered).toBeGreaterThan(0);
+    expect(result.appended).toBeGreaterThan(0);
+    expect(result.appended + result.skipped_filtered + result.skipped_existing).toBe(result.total_codex_events);
+  });
+
+  it("exposes 'ssenrah codex status' and 'ssenrah codex sync' on the CLI", () => {
+    const statusOutput = runCli("codex status");
+    expect(statusOutput).toContain("Codex status");
+    expect(statusOutput).toContain("Resolved Codex home:      yes");
+    expect(statusOutput).toContain("root-thread");
+
+    const syncOutput = runCli("codex sync");
+    expect(syncOutput).toContain("Codex sync");
+    expect(syncOutput).toContain("Appended (new):");
+    // Re-running should report zero new appends.
+    const reSyncOutput = runCli("codex sync");
+    expect(reSyncOutput).toMatch(/Appended \(new\):\s+0/);
   });
 });
