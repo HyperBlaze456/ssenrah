@@ -12,7 +12,7 @@ export type PanelId =
   | "permissions" | "hooks" | "mcp" | "memory" | "agents"
   | "skills" | "plugins" | "sandbox" | "env" | "display"
   | "advanced" | "effective"
-  | "activity" | "sessions" | "run_trace" | "cost" | "alerts"
+  | "activity" | "general" | "run_trace" | "alerts"
   | "reasoning" | "anomalies" | "verify";
 
 // Load status
@@ -381,9 +381,8 @@ export const PANELS: PanelMeta[] = [
 /** Monitor panels — scope-independent (reads from ~/.ssenrah/) */
 export const MONITOR_PANELS: PanelMeta[] = [
   { id: "activity", label: "Activity", icon: "Activity", scopes: [], providers: ["claude", "codex"] },
-  { id: "sessions", label: "Sessions", icon: "Clock", scopes: [], providers: ["claude", "codex"] },
+  { id: "general", label: "General", icon: "DollarSign", scopes: [], providers: ["claude", "codex"] },
   { id: "run_trace", label: "Run Trace", icon: "GitBranch", scopes: [], providers: ["claude", "codex"] },
-  { id: "cost", label: "Cost", icon: "DollarSign", scopes: [], providers: ["claude", "codex"] },
   { id: "alerts", label: "Alerts", icon: "AlertTriangle", scopes: [], providers: ["claude", "codex"] },
   { id: "reasoning", label: "Reasoning", icon: "Brain", scopes: [], providers: ["claude", "codex"] },
   { id: "anomalies", label: "Anomalies", icon: "Radar", scopes: [], providers: ["claude", "codex"] },

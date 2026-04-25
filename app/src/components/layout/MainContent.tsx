@@ -16,9 +16,8 @@ import { AgentsPanel } from "@/components/agents/AgentsPanel";
 import { SkillsPanel } from "@/components/skills/SkillsPanel";
 import { EffectivePanel } from "@/components/visualizer/EffectivePanel";
 import { ActivityPanel } from "@/components/monitor/ActivityPanel";
-import { SessionsPanel } from "@/components/monitor/SessionsPanel";
+import { GeneralPanel } from "@/components/monitor/GeneralPanel";
 import { RunTracePanel } from "@/components/monitor/RunTracePanel";
-import { CostPanel } from "@/components/monitor/CostPanel";
 import { AlertsPanel } from "@/components/monitor/AlertsPanel";
 import { ReasoningPanel } from "@/components/monitor/ReasoningPanel";
 import { AnomalyPanel } from "@/components/monitor/AnomalyPanel";
@@ -40,9 +39,8 @@ const PANEL_COMPONENTS: Partial<Record<PanelId, React.ComponentType>> = {
   skills: SkillsPanel,
   effective: EffectivePanel,
   activity: ActivityPanel,
-  sessions: SessionsPanel,
+  general: GeneralPanel,
   run_trace: RunTracePanel,
-  cost: CostPanel,
   alerts: AlertsPanel,
   reasoning: ReasoningPanel,
   anomalies: AnomalyPanel,

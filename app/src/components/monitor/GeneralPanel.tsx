@@ -2,7 +2,15 @@ import { useEffect, useMemo, useState } from "react";
 import { useMonitorStore, computeSessions, useHarnessEvents } from "@/lib/store/monitor";
 import { useUiStore } from "@/lib/store/ui";
 import { formatProviderLabel } from "@/types";
-import { getScopedEvents, summarizeAgents, summarizeTasks } from "@/lib/telemetry";
+import {
+  getScopedEvents,
+  getSessionIdsByRecency,
+  getSessionTranscriptPath,
+  readSessionCost,
+  summarizeAgents,
+  summarizeTasks,
+  type SessionCost,
+} from "@/lib/telemetry";
 import {
   formatSeverityLabel,
   getSessionSeverity,
@@ -23,7 +31,16 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
-import { Clock, Terminal, AlertCircle, Bot, DollarSign } from "lucide-react";
+import {
+  AlertCircle,
+  Bot,
+  Clock,
+  Coins,
+  Database,
+  DollarSign,
+  Terminal,
+  Zap,
+} from "lucide-react";
 
 type SessionSortMode =
   | "recent"
@@ -54,10 +71,21 @@ function formatTime(iso: string): string {
 }
 
 function formatCost(usd: number): string {
-  if (usd === 0) return "-";
+  if (usd === 0) return "$0.00";
   if (usd < 0.01) return `$${usd.toFixed(4)}`;
   if (usd < 1) return `$${usd.toFixed(3)}`;
   return `$${usd.toFixed(2)}`;
+}
+
+function formatCostCompact(usd: number): string {
+  if (usd === 0) return "-";
+  return formatCost(usd);
+}
+
+function formatTokens(count: number): string {
+  if (count < 1000) return String(count);
+  if (count < 1_000_000) return `${(count / 1000).toFixed(1)}K`;
+  return `${(count / 1_000_000).toFixed(2)}M`;
 }
 
 function formatSessionId(sessionId: string): string {
@@ -69,7 +97,7 @@ function formatOptionalDuration(seconds?: number): string {
   return formatDuration(seconds);
 }
 
-export function SessionsPanel() {
+export function GeneralPanel() {
   const events = useHarnessEvents();
   const provider = useUiStore((state) => state.activeProvider);
   const loading = useMonitorStore((state) => state.loading);
@@ -81,11 +109,13 @@ export function SessionsPanel() {
   const focusSingleSession = useMonitorStore((state) => state.focusSingleSession);
   const clearFocusedSessions = useMonitorStore((state) => state.clearFocusedSessions);
 
-  // Codex's branching unit is a thread, not a subagent. Adjust copy accordingly.
   const subagentLabel = provider === "codex" ? "Threads" : "Subagents";
 
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<SessionSortMode>("recent");
+  const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
+  const [costs, setCosts] = useState<SessionCost[]>([]);
+  const [costLoading, setCostLoading] = useState(false);
 
   const sessions = useMemo(() => computeSessions(events), [events]);
   const focusedSessions = useMemo(
@@ -103,6 +133,63 @@ export function SessionsPanel() {
   const focusedTaskSummaries = useMemo(
     () => (focusedEvents.length > 0 ? summarizeTasks(focusedEvents) : []),
     [focusedEvents],
+  );
+
+  // Cost summary scope: if user has focused some sessions, summarize those;
+  // otherwise summarize ALL recent sessions so the dashboard reflects total spend.
+  const costScopeSessionIds = useMemo(
+    () => getSessionIdsByRecency(events, focusedSessionIds),
+    [events, focusedSessionIds],
+  );
+
+  useEffect(() => {
+    startAutoRefresh(5000);
+    return () => stopAutoRefresh();
+  }, [startAutoRefresh, stopAutoRefresh]);
+
+  useEffect(() => {
+    if (costScopeSessionIds.length === 0) {
+      setCosts([]);
+      setCostLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setCostLoading(true);
+
+    Promise.all(
+      costScopeSessionIds.map(async (sessionId) => {
+        const transcriptPath = getSessionTranscriptPath(events, sessionId);
+        if (!transcriptPath) return null;
+        return readSessionCost(transcriptPath, sessionId);
+      }),
+    )
+      .then((results) => {
+        if (cancelled) return;
+        setCosts(results.filter((cost): cost is SessionCost => cost !== null));
+      })
+      .finally(() => {
+        if (!cancelled) setCostLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [events, costScopeSessionIds]);
+
+  const costsBySessionId = useMemo(() => {
+    const map = new Map<string, SessionCost>();
+    for (const cost of costs) map.set(cost.session_id, cost);
+    return map;
+  }, [costs]);
+
+  const grandTotal = useMemo(
+    () => costs.reduce((sum, cost) => sum + cost.cost_usd, 0),
+    [costs],
+  );
+  const totalTokens = useMemo(
+    () => costs.reduce((sum, cost) => sum + cost.total_tokens, 0),
+    [costs],
   );
 
   const filteredSessions = useMemo(() => {
@@ -144,33 +231,95 @@ export function SessionsPanel() {
     });
   }, [query, sessions, sortMode]);
 
-  useEffect(() => {
-    startAutoRefresh(5000);
-    return () => stopAutoRefresh();
-  }, [startAutoRefresh, stopAutoRefresh]);
-
   if (error) {
     return (
       <div className="p-4 text-destructive">
         <AlertCircle className="mr-2 inline h-4 w-4" />
-        Failed to load sessions: {error}
+        Failed to load monitor data: {error}
       </div>
     );
   }
 
   if (sessions.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
-        <Badge variant="outline">{formatProviderLabel(provider)} harness</Badge>
-        <p className="text-sm text-muted-foreground">No {formatProviderLabel(provider)} sessions recorded yet.</p>
+      <div className="space-y-6">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                <DollarSign className="h-4 w-4" />
+                Total Estimated Cost
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold">$0.00</div>
+              <p className="mt-1 text-xs text-muted-foreground">API-equivalent pricing</p>
+            </CardContent>
+          </Card>
+        </div>
+        <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+          <Badge variant="outline">{formatProviderLabel(provider)} harness</Badge>
+          <p className="text-sm text-muted-foreground">
+            No {formatProviderLabel(provider)} sessions recorded yet.
+          </p>
+        </div>
       </div>
     );
   }
 
   const showFocusedSessionColumn = focusedSessions.length > 1;
+  const scopeLabel =
+    focusedSessionIds.length > 0
+      ? `${costScopeSessionIds.length} focused session${costScopeSessionIds.length !== 1 ? "s" : ""}`
+      : `${costScopeSessionIds.length} recent session${costScopeSessionIds.length !== 1 ? "s" : ""}`;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+              <DollarSign className="h-4 w-4" />
+              Total Estimated Cost
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-3xl font-bold">{formatCost(grandTotal)}</div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {scopeLabel}
+              {(loading || costLoading) && " · refreshing…"}
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+              <Coins className="h-4 w-4" />
+              Total Tokens
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-3xl font-bold">{formatTokens(totalTokens)}</div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              across {costs.length} transcript{costs.length !== 1 ? "s" : ""}
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+              <Zap className="h-4 w-4" />
+              Avg. per Session
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-3xl font-bold">
+              {costs.length > 0 ? formatCost(grandTotal / costs.length) : "$0.00"}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
       {focusedSessions.length > 0 && (
         <Card className="border-primary/20 bg-primary/5">
           <CardContent className="space-y-4 py-4">
@@ -228,7 +377,9 @@ export function SessionsPanel() {
                         {session.errors}
                       </TableCell>
                       <TableCell className="text-right">{session.tool_uses}</TableCell>
-                      <TableCell className="text-right">{formatCost(session.cost_usd)}</TableCell>
+                      <TableCell className="text-right">
+                        {formatCostCompact(session.cost_usd)}
+                      </TableCell>
                       <TableCell className="text-right">
                         {formatDuration(session.duration_seconds)}
                       </TableCell>
@@ -400,7 +551,7 @@ export function SessionsPanel() {
             </div>
             <div className="flex items-end gap-2">
               {query && (
-                <Button variant="ghost" size="sm" onClick={() => setQuery("")}> 
+                <Button variant="ghost" size="sm" onClick={() => setQuery("")}>
                   Clear search
                 </Button>
               )}
@@ -422,6 +573,8 @@ export function SessionsPanel() {
         filteredSessions.map((session) => {
           const severity = getSessionSeverity(session);
           const isFocused = focusedSessionIds.includes(session.session_id);
+          const isExpanded = expandedSessionId === session.session_id;
+          const detailedCost = costsBySessionId.get(session.session_id);
 
           return (
             <Card
@@ -433,7 +586,13 @@ export function SessionsPanel() {
             >
               <CardHeader className="pb-3">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                  <div className="space-y-1">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpandedSessionId(isExpanded ? null : session.session_id)
+                    }
+                    className="space-y-1 text-left"
+                  >
                     <div className="flex flex-wrap items-center gap-2">
                       <CardTitle className="text-sm font-mono">
                         {formatSessionId(session.session_id)}
@@ -442,13 +601,21 @@ export function SessionsPanel() {
                         {formatSeverityLabel(severity)}
                       </Badge>
                       {isFocused && <Badge variant="secondary">Focused</Badge>}
+                      {detailedCost && (
+                        <Badge variant="outline" className="text-[10px]">
+                          {detailedCost.model}
+                        </Badge>
+                      )}
                     </div>
                     <p className="text-xs text-muted-foreground">
                       Started {formatTime(session.first_event)} · Last event {formatTime(session.last_event)}
                     </p>
-                  </div>
+                  </button>
 
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-lg font-bold">
+                      {formatCost(detailedCost?.cost_usd ?? session.cost_usd)}
+                    </span>
                     <Button
                       variant={isFocused ? "secondary" : "outline"}
                       size="sm"
@@ -506,14 +673,6 @@ export function SessionsPanel() {
                   </div>
                 </div>
 
-                {session.cost_usd > 0 && (
-                  <div className="mt-3 flex items-center gap-2 text-sm">
-                    <DollarSign className="h-3.5 w-3.5 text-muted-foreground" />
-                    <span className="text-muted-foreground">Est. cost:</span>
-                    <span className="font-medium">{formatCost(session.cost_usd)}</span>
-                  </div>
-                )}
-
                 {session.top_tools.length > 0 && (
                   <div className="mt-3 flex flex-wrap gap-1.5">
                     {session.top_tools.map(([name, count]) => (
@@ -529,9 +688,67 @@ export function SessionsPanel() {
                   </div>
                 )}
 
-                <div className="mt-2 text-xs text-muted-foreground">
-                  {session.event_count} events total
+                <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
+                  <span>{session.event_count} events total</span>
+                  {detailedCost && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedSessionId(isExpanded ? null : session.session_id)
+                      }
+                      className="rounded px-2 py-0.5 hover:bg-muted"
+                    >
+                      {isExpanded ? "Hide token breakdown" : "Show token breakdown"}
+                    </button>
+                  )}
                 </div>
+
+                {isExpanded && detailedCost && (
+                  <div className="mt-4 grid grid-cols-2 gap-3 text-sm lg:grid-cols-4">
+                    <div className="rounded-md bg-muted/50 p-3">
+                      <div className="mb-1 flex items-center gap-1 text-xs text-muted-foreground">
+                        <Coins className="h-3 w-3" />
+                        Input
+                      </div>
+                      <div className="font-semibold">
+                        {formatTokens(detailedCost.input_tokens)}
+                      </div>
+                    </div>
+                    <div className="rounded-md bg-muted/50 p-3">
+                      <div className="mb-1 flex items-center gap-1 text-xs text-muted-foreground">
+                        <Zap className="h-3 w-3" />
+                        Output
+                      </div>
+                      <div className="font-semibold">
+                        {formatTokens(detailedCost.output_tokens)}
+                      </div>
+                    </div>
+                    <div className="rounded-md bg-muted/50 p-3">
+                      <div className="mb-1 flex items-center gap-1 text-xs text-muted-foreground">
+                        <Database className="h-3 w-3" />
+                        Cache Read
+                      </div>
+                      <div className="font-semibold">
+                        {formatTokens(detailedCost.cache_read_input_tokens)}
+                      </div>
+                    </div>
+                    <div className="rounded-md bg-muted/50 p-3">
+                      <div className="mb-1 flex items-center gap-1 text-xs text-muted-foreground">
+                        <Database className="h-3 w-3" />
+                        Cache Write
+                      </div>
+                      <div className="font-semibold">
+                        {formatTokens(detailedCost.cache_creation_input_tokens)}
+                      </div>
+                    </div>
+                    <div className="col-span-2 flex items-center justify-between border-t pt-3 text-sm lg:col-span-4">
+                      <span className="text-muted-foreground">Total tokens</span>
+                      <span className="font-semibold">
+                        {formatTokens(detailedCost.total_tokens)}
+                      </span>
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
           );
