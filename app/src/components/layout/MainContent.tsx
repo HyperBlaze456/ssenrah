@@ -24,7 +24,7 @@ import { ReasoningPanel } from "@/components/monitor/ReasoningPanel";
 import { AnomalyPanel } from "@/components/monitor/AnomalyPanel";
 import { VerifyPanel } from "@/components/monitor/VerifyPanel";
 import type { PanelId } from "@/types";
-import { PANELS, MONITOR_PANELS, isMonitorPanel } from "@/types";
+import { PANELS, MONITOR_PANELS, isMonitorPanel, panelSupportsProvider } from "@/types";
 
 const PANEL_COMPONENTS: Partial<Record<PanelId, React.ComponentType>> = {
   permissions: PermissionsPanel,
@@ -52,6 +52,7 @@ const PANEL_COMPONENTS: Partial<Record<PanelId, React.ComponentType>> = {
 export function MainContent() {
   const activePanel = useUiStore((s) => s.activePanel);
   const activeScope = useUiStore((s) => s.activeScope);
+  const activeProvider = useUiStore((s) => s.activeProvider);
   const isMonitor = isMonitorPanel(activePanel);
   const isImmersiveMonitor = activePanel === "run_trace";
   const panel =
@@ -59,11 +60,16 @@ export function MainContent() {
     MONITOR_PANELS.find((p) => p.id === activePanel);
   const readOnly = activeScope === "managed";
   const PanelComponent = PANEL_COMPONENTS[activePanel];
+  const supportedForProvider = panel ? panelSupportsProvider(panel, activeProvider) : true;
 
   if (isImmersiveMonitor) {
     return (
       <main className="flex flex-1 overflow-hidden">
-        {PanelComponent ? <PanelComponent /> : <PanelPlaceholder panelId={activePanel} />}
+        {PanelComponent && supportedForProvider ? (
+          <PanelComponent />
+        ) : (
+          <PanelPlaceholder panelId={activePanel} />
+        )}
       </main>
     );
   }
@@ -76,9 +82,13 @@ export function MainContent() {
         readOnly={isMonitor ? false : readOnly}
       />
       <ScrollArea className="flex-1 p-6">
-        {PanelComponent ? <PanelComponent /> : <PanelPlaceholder panelId={activePanel} />}
+        {PanelComponent && supportedForProvider ? (
+          <PanelComponent />
+        ) : (
+          <PanelPlaceholder panelId={activePanel} />
+        )}
       </ScrollArea>
-      {!isMonitor && <EffectiveConfigFooter />}
+      {!isMonitor && activeProvider === "claude" && <EffectiveConfigFooter />}
     </main>
   );
 }

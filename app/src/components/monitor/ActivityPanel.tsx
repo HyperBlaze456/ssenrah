@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMonitorStore, computeSessions } from "@/lib/store/monitor";
+import { useMonitorStore, computeSessions, useHarnessEvents } from "@/lib/store/monitor";
+import { useUiStore } from "@/lib/store/ui";
+import { formatProviderLabel } from "@/types";
 import {
   deriveActorFlows,
   deriveTelemetryTimeline,
@@ -266,7 +268,8 @@ function FlowActorCard({ actor }: { actor: ActorFlow }) {
 }
 
 export function ActivityPanel() {
-  const events = useMonitorStore((state) => state.events);
+  const events = useHarnessEvents();
+  const provider = useUiStore((state) => state.activeProvider);
   const loading = useMonitorStore((state) => state.loading);
   const error = useMonitorStore((state) => state.error);
   const startAutoRefresh = useMonitorStore((state) => state.startAutoRefresh);
@@ -356,6 +359,22 @@ export function ActivityPanel() {
       <div className="p-4 text-destructive">
         <AlertCircle className="mr-2 inline h-4 w-4" />
         Failed to load telemetry: {error}
+      </div>
+    );
+  }
+
+  if (events.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+        <Badge variant="outline">{formatProviderLabel(provider)} harness</Badge>
+        <p className="text-sm text-muted-foreground">
+          No {formatProviderLabel(provider)} events recorded yet.
+        </p>
+        <p className="text-xs text-muted-foreground">
+          {provider === "codex"
+            ? "Run `npx tsx tracker/src/cli.ts codex sync` to import any existing Codex sessions."
+            : "Start a Claude Code session — events will stream here."}
+        </p>
       </div>
     );
   }

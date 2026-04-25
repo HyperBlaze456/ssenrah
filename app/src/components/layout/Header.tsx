@@ -1,5 +1,6 @@
 import { useProjectStore } from "@/lib/store/project";
 import { ProjectPicker } from "@/components/layout/ProjectPicker";
+import { HarnessSwitcher } from "@/components/layout/HarnessSwitcher";
 import { Tooltip } from "@/components/ui/tooltip";
 import { Moon, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -36,6 +37,7 @@ export function Header() {
         {platformInfo && !platformInfo.claudeCodeInstalled && (
           <span className="text-xs text-muted-foreground">(Claude Code not detected)</span>
         )}
+        <HarnessSwitcher />
       </div>
       <div className="flex items-center gap-2">
         <ProjectPicker />

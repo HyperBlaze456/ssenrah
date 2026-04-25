@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMonitorStore, computeSessions } from "@/lib/store/monitor";
+import { useMonitorStore, computeSessions, useHarnessEvents } from "@/lib/store/monitor";
 import {
   detectAnomalies,
   formatSeverityLabel,
@@ -62,7 +62,7 @@ function formatSessionId(sessionId: string): string {
 }
 
 export function AnomalyPanel() {
-  const events = useMonitorStore((state) => state.events);
+  const events = useHarnessEvents();
   const loading = useMonitorStore((state) => state.loading);
   const error = useMonitorStore((state) => state.error);
   const startAutoRefresh = useMonitorStore((state) => state.startAutoRefresh);

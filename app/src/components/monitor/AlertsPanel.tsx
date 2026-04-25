@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMonitorStore, computeSessions } from "@/lib/store/monitor";
+import { useMonitorStore, computeSessions, useHarnessEvents } from "@/lib/store/monitor";
 import { readTextFile, exists, writeTextFile } from "@tauri-apps/plugin-fs";
 import { homeDir, join } from "@tauri-apps/api/path";
 import {
@@ -75,7 +75,7 @@ function thresholdUnit(condition: string): string {
 }
 
 export function AlertsPanel() {
-  const events = useMonitorStore((state) => state.events);
+  const events = useHarnessEvents();
   const startAutoRefresh = useMonitorStore((state) => state.startAutoRefresh);
   const stopAutoRefresh = useMonitorStore((state) => state.stopAutoRefresh);
   const focusedSessionIds = useMonitorStore((state) => state.focusedSessionIds);

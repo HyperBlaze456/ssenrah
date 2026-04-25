@@ -1,8 +1,11 @@
+import { useMemo } from "react";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { readTextFile, exists } from "@tauri-apps/plugin-fs";
 import { homeDir, join } from "@tauri-apps/api/path";
-import type { AgentEvent, EventSummary, SessionSummary } from "@/types";
+import type { AgentEvent, EventSummary, Provider, SessionSummary } from "@/types";
+import { detectProvider } from "@/types";
+import { useUiStore } from "@/lib/store/ui";
 import { getAuthoritativeSessionCost, getAuthoritativeTotalCost } from "@/lib/telemetry";
 
 interface MonitorStore {
@@ -52,6 +55,30 @@ function parseJsonlEvents(content: string): AgentEvent[] {
     }
   }
   return events;
+}
+
+/** Filter events down to a single harness/provider (`claude` or `codex`). */
+export function filterEventsByProvider(events: AgentEvent[], provider: Provider): AgentEvent[] {
+  return events.filter((event) => detectProvider(event) === provider);
+}
+
+/**
+ * Subscribe to the harness-scoped event slice. Wraps `useMonitorStore` + `useUiStore`
+ * so individual panels don't have to repeat the filtering boilerplate.
+ */
+export function useHarnessEvents(): AgentEvent[] {
+  const events = useMonitorStore((state) => state.events);
+  const provider = useUiStore((state) => state.activeProvider);
+  return useMemo(() => filterEventsByProvider(events, provider), [events, provider]);
+}
+
+/** Counts of events per provider — used to drive the harness toggle UI. */
+export function computeProviderCounts(events: AgentEvent[]): Record<Provider, number> {
+  const counts: Record<Provider, number> = { claude: 0, codex: 0 };
+  for (const event of events) {
+    counts[detectProvider(event)] += 1;
+  }
+  return counts;
 }
 
 export function computeSummary(events: AgentEvent[]): EventSummary {

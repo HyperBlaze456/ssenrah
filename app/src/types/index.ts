@@ -71,8 +71,9 @@ export interface ConflictInfo {
 
 // Hook types
 export type HookEvent =
-  | "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
-  | "PermissionRequest" | "UserPromptSubmit" | "Notification"
+  | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" | "PostToolBatch"
+  | "PermissionRequest" | "PermissionDenied"
+  | "UserPromptSubmit" | "UserPromptExpansion" | "Notification"
   | "Stop" | "StopFailure" | "SubagentStart" | "SubagentStop"
   | "SessionStart" | "SessionEnd" | "TeammateIdle"
   | "TaskCreated" | "TaskCompleted" | "PreCompact" | "PostCompact"
@@ -235,6 +236,7 @@ export interface AgentEvent {
   branch_kind?: BranchKind;
   task_id?: string;
   task_subject?: string;
+  task_name?: string;
   task_description?: string;
   prompt_segment_id?: string;
   duration_ms?: number;
@@ -246,30 +248,49 @@ export interface AgentEvent {
   teammate_name?: string;
   team_name?: string;
   notification_type?: string;
+  notification_message?: string;
   title?: string;
   message?: string;
   prompt?: string;
+  expansion_type?: "slash_command" | "mcp_prompt" | string;
+  command_name?: string;
+  command_args?: string;
+  command_source?: string;
   source?: string;
   reason?: string;
+  stop_reason?: string;
+  exit_reason?: string;
   trigger?: string;
   compact_summary?: string;
   old_cwd?: string;
   new_cwd?: string;
   event?: string;
   worktree_path?: string;
+  isolation_mode?: string;
+  subagent_id?: string;
   agent_transcript_path?: string;
+  mcp_server?: string;
   mcp_server_name?: string;
+  elicitation_form?: Record<string, unknown>;
+  user_response?: Record<string, unknown>;
   requested_schema?: Record<string, unknown>;
   mode?: string;
   url?: string;
   action?: string;
   content?: unknown;
   elicitation_id?: string;
+  permission_suggestions?: Array<Record<string, unknown>>;
   stop_hook_active?: boolean;
   last_assistant_message?: string;
   error_details?: unknown;
+  error_type?: string;
+  error_message?: string;
+  is_interrupt?: boolean;
+  tool_calls?: Array<Record<string, unknown>>;
   config_source?: string;
+  changed_keys?: string[];
   file_path?: string;
+  change_type?: "created" | "modified" | "deleted" | string;
   memory_type?: string;
   load_reason?: string;
   globs?: string[];
@@ -278,6 +299,28 @@ export interface AgentEvent {
   cost_usd?: number;
   extras?: Record<string, unknown>;
   _raw?: Record<string, unknown>;
+}
+
+/** Which agent harness produced an event. */
+export type Provider = "claude" | "codex";
+
+/** Detect the provider (harness) for a captured event. */
+export function detectProvider(event: AgentEvent): Provider {
+  const extrasProvider =
+    typeof event.extras?.provider === "string" ? (event.extras.provider as string) : null;
+  if (extrasProvider === "codex") return "codex";
+  const rawProvider =
+    event._raw && typeof event._raw === "object" && "provider" in event._raw
+      ? (event._raw as Record<string, unknown>).provider
+      : null;
+  if (rawProvider === "codex") return "codex";
+  if (typeof event.id === "string" && event.id.startsWith("codex:")) return "codex";
+  return "claude";
+}
+
+/** Pretty label for a Provider value. */
+export function formatProviderLabel(provider: Provider): string {
+  return provider === "codex" ? "Codex" : "Claude Code";
 }
 
 export interface SessionSummary {
@@ -312,36 +355,48 @@ export interface PanelMeta {
   label: string;
   icon: string;
   scopes: ConfigScope[];
+  /**
+   * Which harness this panel applies to. Defaults to ["claude"].
+   * Codex doesn't expose configuration through ssenrah, so its track shows
+   * monitor panels only.
+   */
+  providers?: Provider[];
 }
 
 export const PANELS: PanelMeta[] = [
-  { id: "permissions", label: "Permissions", icon: "Shield", scopes: ["user", "project", "local", "managed"] },
-  { id: "hooks", label: "Hooks", icon: "Webhook", scopes: ["user", "project", "local", "managed"] },
-  { id: "mcp", label: "MCP Servers", icon: "Server", scopes: ["user", "project", "managed"] },
-  { id: "memory", label: "Memory", icon: "Brain", scopes: ["user", "project", "local"] },
-  { id: "agents", label: "Agents", icon: "Bot", scopes: ["user", "project"] },
-  { id: "skills", label: "Skills", icon: "Sparkles", scopes: ["user", "project"] },
-  { id: "plugins", label: "Plugins", icon: "Puzzle", scopes: ["user"] },
-  { id: "sandbox", label: "Sandbox", icon: "Box", scopes: ["user", "project", "local", "managed"] },
-  { id: "env", label: "Environment", icon: "Variable", scopes: ["user", "project", "local", "managed"] },
-  { id: "display", label: "Model & Display", icon: "Palette", scopes: ["user", "project", "local", "managed"] },
-  { id: "advanced", label: "Advanced", icon: "Settings", scopes: ["user", "project", "local"] },
-  { id: "effective", label: "Effective Config", icon: "Layers", scopes: [] },
+  { id: "permissions", label: "Permissions", icon: "Shield", scopes: ["user", "project", "local", "managed"], providers: ["claude"] },
+  { id: "hooks", label: "Hooks", icon: "Webhook", scopes: ["user", "project", "local", "managed"], providers: ["claude"] },
+  { id: "mcp", label: "MCP Servers", icon: "Server", scopes: ["user", "project", "managed"], providers: ["claude"] },
+  { id: "memory", label: "Memory", icon: "Brain", scopes: ["user", "project", "local"], providers: ["claude"] },
+  { id: "agents", label: "Agents", icon: "Bot", scopes: ["user", "project"], providers: ["claude"] },
+  { id: "skills", label: "Skills", icon: "Sparkles", scopes: ["user", "project"], providers: ["claude"] },
+  { id: "plugins", label: "Plugins", icon: "Puzzle", scopes: ["user"], providers: ["claude"] },
+  { id: "sandbox", label: "Sandbox", icon: "Box", scopes: ["user", "project", "local", "managed"], providers: ["claude"] },
+  { id: "env", label: "Environment", icon: "Variable", scopes: ["user", "project", "local", "managed"], providers: ["claude"] },
+  { id: "display", label: "Model & Display", icon: "Palette", scopes: ["user", "project", "local", "managed"], providers: ["claude"] },
+  { id: "advanced", label: "Advanced", icon: "Settings", scopes: ["user", "project", "local"], providers: ["claude"] },
+  { id: "effective", label: "Effective Config", icon: "Layers", scopes: [], providers: ["claude"] },
 ];
 
 /** Monitor panels — scope-independent (reads from ~/.ssenrah/) */
 export const MONITOR_PANELS: PanelMeta[] = [
-  { id: "activity", label: "Activity", icon: "Activity", scopes: [] },
-  { id: "sessions", label: "Sessions", icon: "Clock", scopes: [] },
-  { id: "run_trace", label: "Run Trace", icon: "GitBranch", scopes: [] },
-  { id: "cost", label: "Cost", icon: "DollarSign", scopes: [] },
-  { id: "alerts", label: "Alerts", icon: "AlertTriangle", scopes: [] },
-  { id: "reasoning", label: "Reasoning", icon: "Brain", scopes: [] },
-  { id: "anomalies", label: "Anomalies", icon: "Radar", scopes: [] },
-  { id: "verify", label: "Verify", icon: "CheckSquare", scopes: [] },
+  { id: "activity", label: "Activity", icon: "Activity", scopes: [], providers: ["claude", "codex"] },
+  { id: "sessions", label: "Sessions", icon: "Clock", scopes: [], providers: ["claude", "codex"] },
+  { id: "run_trace", label: "Run Trace", icon: "GitBranch", scopes: [], providers: ["claude", "codex"] },
+  { id: "cost", label: "Cost", icon: "DollarSign", scopes: [], providers: ["claude", "codex"] },
+  { id: "alerts", label: "Alerts", icon: "AlertTriangle", scopes: [], providers: ["claude", "codex"] },
+  { id: "reasoning", label: "Reasoning", icon: "Brain", scopes: [], providers: ["claude", "codex"] },
+  { id: "anomalies", label: "Anomalies", icon: "Radar", scopes: [], providers: ["claude", "codex"] },
+  { id: "verify", label: "Verify", icon: "CheckSquare", scopes: [], providers: ["claude", "codex"] },
 ];
 
 /** Check if a panel is a monitor panel (scope-independent) */
 export function isMonitorPanel(id: PanelId): boolean {
   return MONITOR_PANELS.some((p) => p.id === id);
+}
+
+/** Whether the panel renders for the active provider. */
+export function panelSupportsProvider(meta: PanelMeta, provider: Provider): boolean {
+  if (!meta.providers) return provider === "claude";
+  return meta.providers.includes(provider);
 }

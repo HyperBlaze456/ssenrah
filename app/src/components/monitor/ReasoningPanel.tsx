@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMonitorStore } from "@/lib/store/monitor";
+import { useMonitorStore, useHarnessEvents } from "@/lib/store/monitor";
 import {
   getPrimarySessionId,
   getSessionTranscriptPath,
@@ -30,7 +30,7 @@ function truncate(value: string, max: number): string {
 }
 
 export function ReasoningPanel() {
-  const events = useMonitorStore((state) => state.events);
+  const events = useHarnessEvents();
   const loading = useMonitorStore((state) => state.loading);
   const error = useMonitorStore((state) => state.error);
   const startAutoRefresh = useMonitorStore((state) => state.startAutoRefresh);

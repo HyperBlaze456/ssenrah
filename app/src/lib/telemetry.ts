@@ -292,12 +292,18 @@ function getResource(event: AgentEvent): string | undefined {
     event.file_path ??
     event.worktree_path ??
     event.tool_name ??
+    event.mcp_server ??
     event.mcp_server_name ??
     event.url ??
     event.new_cwd ??
     event.trigger_file_path ??
     event.parent_file_path
   );
+}
+
+/** Resolved task subject — the new `task_name` field falls back to legacy `task_subject`. */
+function getTaskSubject(event: AgentEvent): string | undefined {
+  return event.task_name ?? event.task_subject;
 }
 
 function getOperationParts(event: AgentEvent): {
@@ -322,7 +328,9 @@ function getOperationParts(event: AgentEvent): {
         phase: "end",
         severity: "info",
         summary: "Session ended",
-        detail: truncateText([event.reason, event.source].filter(Boolean).join(" · ")),
+        detail: truncateText(
+          [event.exit_reason, event.reason, event.source].filter(Boolean).join(" · "),
+        ),
       };
     case "UserPromptSubmit":
       return {
@@ -331,6 +339,20 @@ function getOperationParts(event: AgentEvent): {
         severity: "info",
         summary: "User prompt submitted",
         detail: truncateText(event.prompt ?? event.message),
+      };
+    case "UserPromptExpansion":
+      return {
+        operation: "prompt.expand",
+        phase: "event",
+        severity: "info",
+        summary: event.command_name
+          ? `Slash command: /${event.command_name}`
+          : event.expansion_type === "mcp_prompt"
+            ? "MCP prompt expanded"
+            : "Prompt expanded",
+        detail: truncateText(
+          [event.command_args, event.command_source, event.prompt].filter(Boolean).join(" · "),
+        ),
       };
     case "InstructionsLoaded":
       return {
@@ -374,6 +396,18 @@ function getOperationParts(event: AgentEvent): {
         summary: `${event.tool_name ?? "Tool"} failed`,
         detail: truncateText(event.error ?? summarizeToolInput(event)),
       };
+    case "PostToolBatch":
+      return {
+        operation: "tool.batch",
+        phase: "end",
+        severity: "info",
+        summary: `Tool batch resolved (${event.tool_calls?.length ?? 0})`,
+        detail: truncateText(
+          event.tool_calls
+            ?.map((call) => (typeof call.tool_name === "string" ? call.tool_name : "?"))
+            .join(", "),
+        ),
+      };
     case "PermissionRequest":
       return {
         operation: "permission.request",
@@ -382,13 +416,21 @@ function getOperationParts(event: AgentEvent): {
         summary: "Permission requested",
         detail: summarizeToolInput(event),
       };
+    case "PermissionDenied":
+      return {
+        operation: "permission.denied",
+        phase: "failure",
+        severity: "warning",
+        summary: `${event.tool_name ?? "Tool"} denied`,
+        detail: summarizeToolInput(event),
+      };
     case "Notification":
       return {
         operation: "notification",
         phase: "event",
         severity: "info",
         summary: event.title ?? event.notification_type ?? "Notification",
-        detail: truncateText(event.message),
+        detail: truncateText(event.notification_message ?? event.message),
       };
     case "SubagentStart":
       return {
@@ -406,26 +448,26 @@ function getOperationParts(event: AgentEvent): {
         summary: `${event.agent_type ?? "Subagent"} stopped`,
         detail: truncateText([event.reason, event.agent_transcript_path].filter(Boolean).join(" · ")),
       };
-    case "TaskCreated":
+    case "TaskCreated": {
+      const subject = getTaskSubject(event);
       return {
         operation: "task.create",
         phase: "start",
         severity: "info",
-        summary: event.task_subject
-          ? `Task created: ${truncateText(event.task_subject, 80)}`
-          : "Task created",
+        summary: subject ? `Task created: ${truncateText(subject, 80)}` : "Task created",
         detail: truncateText(event.task_description),
       };
-    case "TaskCompleted":
+    }
+    case "TaskCompleted": {
+      const subject = getTaskSubject(event);
       return {
         operation: "task.complete",
         phase: "end",
         severity: "info",
-        summary: event.task_subject
-          ? `Task completed: ${truncateText(event.task_subject, 80)}`
-          : "Task completed",
+        summary: subject ? `Task completed: ${truncateText(subject, 80)}` : "Task completed",
         detail: truncateText(event.task_description),
       };
+    }
     case "TeammateIdle":
       return {
         operation: "teammate.idle",
@@ -440,7 +482,11 @@ function getOperationParts(event: AgentEvent): {
         phase: "update",
         severity: "info",
         summary: "Configuration changed",
-        detail: truncateText([event.config_source, event.file_path].filter(Boolean).join(" · ")),
+        detail: truncateText(
+          [event.config_source, event.file_path, event.changed_keys?.join(", ")]
+            .filter(Boolean)
+            .join(" · "),
+        ),
       };
     case "CwdChanged":
       return {
@@ -455,7 +501,11 @@ function getOperationParts(event: AgentEvent): {
         operation: "file.change",
         phase: "update",
         severity: "info",
-        summary: event.event ? `File ${event.event}` : "File changed",
+        summary: event.change_type
+          ? `File ${event.change_type}`
+          : event.event
+            ? `File ${event.event}`
+            : "File changed",
         detail: truncateText(event.file_path),
       };
     case "WorktreeCreate":
@@ -494,33 +544,48 @@ function getOperationParts(event: AgentEvent): {
       return {
         operation: "session.stop",
         phase: "end",
-        severity: event.reason ? "warning" : "info",
+        severity: event.stop_reason || event.reason ? "warning" : "info",
         summary: "Session stopped",
-        detail: truncateText([event.reason, event.last_assistant_message].filter(Boolean).join(" · ")),
+        detail: truncateText(
+          [event.stop_reason, event.reason, event.last_assistant_message]
+            .filter(Boolean)
+            .join(" · "),
+        ),
       };
     case "StopFailure":
       return {
         operation: "session.stop_failure",
         phase: "failure",
         severity: "error",
-        summary: "Session stop failed",
-        detail: truncateText(event.error ?? stringifyUnknown(event.error_details) ?? event.reason),
+        summary: event.error_type ? `Session stop failed: ${event.error_type}` : "Session stop failed",
+        detail: truncateText(
+          event.error_message ??
+            event.error ??
+            stringifyUnknown(event.error_details) ??
+            event.reason,
+        ),
       };
     case "Elicitation":
       return {
         operation: "elicitation.request",
         phase: "start",
         severity: "info",
-        summary: "Elicitation requested",
-        detail: truncateText([event.mode, event.url, event.message].filter(Boolean).join(" · ")),
+        summary: event.mcp_server
+          ? `Elicitation requested (${event.mcp_server})`
+          : "Elicitation requested",
+        detail: truncateText(
+          [event.mode, event.url, event.message, stringifyUnknown(event.elicitation_form)]
+            .filter(Boolean)
+            .join(" · "),
+        ),
       };
     case "ElicitationResult":
       return {
         operation: "elicitation.result",
         phase: "end",
-        severity: event.action === "cancel" ? "warning" : "info",
+        severity: event.action === "cancel" || event.action === "decline" ? "warning" : "info",
         summary: event.action ? `Elicitation ${event.action}` : "Elicitation completed",
-        detail: stringifyUnknown(event.content),
+        detail: stringifyUnknown(event.user_response ?? event.content),
       };
     case "_escalation":
       return {
@@ -667,15 +732,16 @@ export function summarizeTasks(
 
   const tasks = new Map<string, TaskSummary>();
   for (const event of filtered) {
-    if (!event.task_id && !event.task_subject) continue;
-    const taskKey = event.task_id ?? `${event.session_id}:${event.task_subject}`;
+    const subject = getTaskSubject(event);
+    if (!event.task_id && !subject) continue;
+    const taskKey = event.task_id ?? `${event.session_id}:${subject}`;
     const owner = event.teammate_name ?? getActor(event).actor_label;
     const existing = tasks.get(taskKey);
     if (!existing) {
       tasks.set(taskKey, {
         session_id: event.session_id,
         task_id: taskKey,
-        subject: event.task_subject ?? taskKey,
+        subject: subject ?? taskKey,
         description: event.task_description,
         owner,
         team_name: event.team_name,
@@ -686,7 +752,7 @@ export function summarizeTasks(
       continue;
     }
 
-    existing.subject = event.task_subject ?? existing.subject;
+    existing.subject = subject ?? existing.subject;
     existing.description = event.task_description ?? existing.description;
     existing.owner = event.teammate_name ?? existing.owner;
     existing.team_name = event.team_name ?? existing.team_name;

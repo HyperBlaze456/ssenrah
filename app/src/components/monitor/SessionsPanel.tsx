@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMonitorStore, computeSessions } from "@/lib/store/monitor";
+import { useMonitorStore, computeSessions, useHarnessEvents } from "@/lib/store/monitor";
+import { useUiStore } from "@/lib/store/ui";
+import { formatProviderLabel } from "@/types";
 import { getScopedEvents, summarizeAgents, summarizeTasks } from "@/lib/telemetry";
 import {
   formatSeverityLabel,
@@ -68,7 +70,8 @@ function formatOptionalDuration(seconds?: number): string {
 }
 
 export function SessionsPanel() {
-  const events = useMonitorStore((state) => state.events);
+  const events = useHarnessEvents();
+  const provider = useUiStore((state) => state.activeProvider);
   const loading = useMonitorStore((state) => state.loading);
   const error = useMonitorStore((state) => state.error);
   const startAutoRefresh = useMonitorStore((state) => state.startAutoRefresh);
@@ -77,6 +80,9 @@ export function SessionsPanel() {
   const toggleFocusedSession = useMonitorStore((state) => state.toggleFocusedSession);
   const focusSingleSession = useMonitorStore((state) => state.focusSingleSession);
   const clearFocusedSessions = useMonitorStore((state) => state.clearFocusedSessions);
+
+  // Codex's branching unit is a thread, not a subagent. Adjust copy accordingly.
+  const subagentLabel = provider === "codex" ? "Threads" : "Subagents";
 
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<SessionSortMode>("recent");
@@ -154,8 +160,9 @@ export function SessionsPanel() {
 
   if (sessions.length === 0) {
     return (
-      <div className="flex items-center justify-center py-16">
-        <p className="text-sm text-muted-foreground">No sessions recorded yet.</p>
+      <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+        <Badge variant="outline">{formatProviderLabel(provider)} harness</Badge>
+        <p className="text-sm text-muted-foreground">No {formatProviderLabel(provider)} sessions recorded yet.</p>
       </div>
     );
   }
@@ -494,7 +501,7 @@ export function SessionsPanel() {
                   </div>
                   <div className="flex items-center gap-2">
                     <Bot className="h-3.5 w-3.5 text-muted-foreground" />
-                    <span className="text-muted-foreground">Subagents:</span>
+                    <span className="text-muted-foreground">{subagentLabel}:</span>
                     <span className="font-medium">{session.subagents}</span>
                   </div>
                 </div>

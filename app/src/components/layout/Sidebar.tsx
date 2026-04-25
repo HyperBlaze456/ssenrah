@@ -1,6 +1,6 @@
 import { useUiStore } from "@/lib/store/ui";
 import { useProjectStore } from "@/lib/store/project";
-import { PANELS, MONITOR_PANELS, type ConfigScope } from "@/types";
+import { PANELS, MONITOR_PANELS, panelSupportsProvider, type ConfigScope } from "@/types";
 import { ScopeBadge } from "../shared/ScopeBadge";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -23,6 +23,7 @@ function getPanelIcon(iconName: string) {
 export function Sidebar() {
   const activePanel = useUiStore((s) => s.activePanel);
   const activeScope = useUiStore((s) => s.activeScope);
+  const activeProvider = useUiStore((s) => s.activeProvider);
   const collapsed = useUiStore((s) => s.sidebarCollapsed);
   const setPanel = useUiStore((s) => s.setPanel);
   const setScope = useUiStore((s) => s.setScope);
@@ -30,6 +31,13 @@ export function Sidebar() {
   const projectInfo = useProjectStore((s) => s.info);
 
   const hasProject = !!projectInfo?.projectRoot;
+  const isCodex = activeProvider === "codex";
+
+  // Codex doesn't support ssenrah's config track. Show a helpful note instead.
+  const visibleConfigPanels = PANELS.filter((panel) => panelSupportsProvider(panel, activeProvider));
+  const visibleMonitorPanels = MONITOR_PANELS.filter((panel) => panelSupportsProvider(panel, activeProvider));
+  const monitorHeading = isCodex ? "Codex Monitor" : "Monitor";
+  const configHeading = isCodex ? "Codex Config" : "Config";
 
   return (
     <aside
@@ -55,7 +63,9 @@ export function Sidebar() {
         )}
       </div>
 
-      {/* Scope selector */}
+      {/* Scope selector — only meaningful for the Claude harness, since Codex has no
+          per-scope config files; we hide it entirely on the Codex track. */}
+      {!isCodex && (
       <div className={cn("border-b border-sidebar-border", collapsed ? "px-1.5 py-2" : "px-3 py-3")}>
         {!collapsed && (
           <p className="mb-2 text-xs font-medium uppercase tracking-wider text-sidebar-foreground/50">Scope</p>
@@ -93,14 +103,15 @@ export function Sidebar() {
           })}
         </div>
       </div>
+      )}
 
       {/* Panel navigation */}
       <nav className={cn("flex-1 overflow-y-auto py-2", collapsed ? "px-1.5" : "px-2")}>
-        {!collapsed && (
-          <p className="mb-2 px-2 text-xs font-medium uppercase tracking-wider text-sidebar-foreground/50">Config</p>
+        {!collapsed && visibleConfigPanels.length > 0 && (
+          <p className="mb-2 px-2 text-xs font-medium uppercase tracking-wider text-sidebar-foreground/50">{configHeading}</p>
         )}
         <div className="flex flex-col gap-0.5">
-          {PANELS.map((panel) => {
+          {visibleConfigPanels.map((panel) => {
             const Icon = getPanelIcon(panel.icon);
             const isActive = activePanel === panel.id;
             const scopeAvailable = panel.id === "effective" || panel.scopes.includes(activeScope);
@@ -134,12 +145,12 @@ export function Sidebar() {
         </div>
 
         {/* Monitor section */}
-        <div className={cn("mt-4 pt-3 border-t border-sidebar-border")}>
+        <div className={cn(visibleConfigPanels.length > 0 ? "mt-4 pt-3 border-t border-sidebar-border" : "")}>
           {!collapsed && (
-            <p className="mb-2 px-2 text-xs font-medium uppercase tracking-wider text-sidebar-foreground/50">Monitor</p>
+            <p className="mb-2 px-2 text-xs font-medium uppercase tracking-wider text-sidebar-foreground/50">{monitorHeading}</p>
           )}
           <div className="flex flex-col gap-0.5">
-            {MONITOR_PANELS.map((panel) => {
+            {visibleMonitorPanels.map((panel) => {
               const Icon = getPanelIcon(panel.icon);
               const isActive = activePanel === panel.id;
               const btn = (

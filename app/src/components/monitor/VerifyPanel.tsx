@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from "react";
-import { useMonitorStore } from "@/lib/store/monitor";
+import { useMonitorStore, useHarnessEvents } from "@/lib/store/monitor";
 import { getPrimarySessionId, verifySession, type SessionVerification } from "@/lib/telemetry";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -28,7 +28,7 @@ function formatSessionId(sessionId: string): string {
 }
 
 export function VerifyPanel() {
-  const events = useMonitorStore((state) => state.events);
+  const events = useHarnessEvents();
   const loading = useMonitorStore((state) => state.loading);
   const error = useMonitorStore((state) => state.error);
   const startAutoRefresh = useMonitorStore((state) => state.startAutoRefresh);

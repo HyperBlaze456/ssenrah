@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { computeSessions, useMonitorStore } from "@/lib/store/monitor";
+import { computeSessions, useMonitorStore, useHarnessEvents } from "@/lib/store/monitor";
 import {
   deriveRunTraceModel,
   deriveRunTraceSummary,
@@ -118,7 +118,7 @@ function countActiveNodeFilters(filters: RunTraceNodeFilters): number {
 }
 
 export function RunTracePanel() {
-  const events = useMonitorStore((state) => state.events);
+  const events = useHarnessEvents();
   const loading = useMonitorStore((state) => state.loading);
   const error = useMonitorStore((state) => state.error);
   const startAutoRefresh = useMonitorStore((state) => state.startAutoRefresh);
