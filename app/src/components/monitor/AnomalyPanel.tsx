@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMonitorStore, computeSessions, useHarnessEvents } from "@/lib/store/monitor";
 import {
+  useEscalationStore,
+  getCostThreshold,
+  getDurationThreshold,
+} from "@/lib/store/escalation";
+import { useUiStore } from "@/lib/store/ui";
+import {
   detectAnomalies,
   formatSeverityLabel,
   getAnomalyKey,
@@ -13,7 +19,16 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { Radar, AlertCircle, RefreshCw, Repeat, Zap, DollarSign, ArrowRightLeft } from "lucide-react";
+import {
+  Radar,
+  AlertCircle,
+  RefreshCw,
+  Repeat,
+  Zap,
+  DollarSign,
+  ArrowRightLeft,
+  SlidersHorizontal,
+} from "lucide-react";
 
 type SeverityFilter = "all" | "warning" | "critical";
 type AnomalySortMode = "severity" | "recent" | "oldest";
@@ -89,12 +104,33 @@ export function AnomalyPanel() {
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>("all");
   const [sortMode, setSortMode] = useState<AnomalySortMode>("severity");
 
+  const rules = useEscalationStore((state) => state.rules);
+  const rulesLoaded = useEscalationStore((state) => state.loaded);
+  const loadRules = useEscalationStore((state) => state.load);
+  const openAlertsConfig = useUiStore((state) => state.openAlertsConfig);
+
+  useEffect(() => {
+    if (!rulesLoaded) {
+      void loadRules();
+    }
+  }, [rulesLoaded, loadRules]);
+
+  const costThreshold = getCostThreshold(rules);
+  const durationThreshold = getDurationThreshold(rules);
+
   const sessions = useMemo(() => computeSessions(events), [events]);
   const focusedSessions = useMemo(
     () => sessions.filter((session) => focusedSessionIds.includes(session.session_id)),
     [focusedSessionIds, sessions],
   );
-  const anomalies = useMemo(() => detectAnomalies(events), [events]);
+  const anomalies = useMemo(
+    () =>
+      detectAnomalies(events, {
+        costUsd: costThreshold ?? undefined,
+        durationSeconds: durationThreshold ?? undefined,
+      }),
+    [events, costThreshold, durationThreshold],
+  );
 
   const visibleAnomalies = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -190,6 +226,36 @@ export function AnomalyPanel() {
           </CardContent>
         </Card>
       )}
+
+      <Card className="bg-muted/30">
+        <CardContent className="flex flex-col gap-2 py-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-start gap-2 text-xs text-muted-foreground">
+            <SlidersHorizontal className="mt-0.5 h-3.5 w-3.5" />
+            <span>
+              Cost spikes flagged above{" "}
+              <span className="font-medium text-foreground">
+                {costThreshold !== null ? `$${costThreshold.toFixed(2)}` : "default"}
+              </span>
+              {" · "}long sessions above{" "}
+              <span className="font-medium text-foreground">
+                {durationThreshold !== null
+                  ? `${Math.round(durationThreshold / 60)} min`
+                  : "default"}
+              </span>
+              .
+            </span>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1"
+            onClick={() => openAlertsConfig("cost")}
+          >
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            Adjust thresholds
+          </Button>
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-3 gap-4">
         <Card>
@@ -387,6 +453,17 @@ export function AnomalyPanel() {
                         <span className="text-[10px] text-muted-foreground">
                           {formatTime(anomaly.timestamp)}
                         </span>
+                        {anomaly.type === "cost_spike" && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="gap-1"
+                            onClick={() => openAlertsConfig("cost")}
+                          >
+                            <SlidersHorizontal className="h-3.5 w-3.5" />
+                            Adjust limit
+                          </Button>
+                        )}
                         <Button
                           variant="ghost"
                           size="sm"

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { computeSessions, useMonitorStore, useHarnessEvents } from "@/lib/store/monitor";
 import {
   deriveRunTraceModel,
@@ -9,25 +9,22 @@ import {
   type RunTraceSummary,
   type TelemetrySeverity,
 } from "@/lib/telemetry";
-import { useUiStore } from "@/lib/store/ui";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select } from "@/components/ui/select";
+import { SessionPicker } from "@/components/monitor/SessionPicker";
 import { cn } from "@/lib/utils";
 import {
   AlertCircle,
-  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Filter,
-  LayoutPanelLeft,
   MessageSquareText,
   PanelsTopLeft,
   RotateCcw,
   Search,
-  X,
 } from "lucide-react";
 import { RunTraceFlow, type RunTraceNodeFilters } from "./run-trace/RunTraceFlow";
 import { RunTraceInspectorDrawer } from "./run-trace/RunTraceInspectorDrawer";
@@ -123,19 +120,11 @@ export function RunTracePanel() {
   const error = useMonitorStore((state) => state.error);
   const startAutoRefresh = useMonitorStore((state) => state.startAutoRefresh);
   const stopAutoRefresh = useMonitorStore((state) => state.stopAutoRefresh);
-  const focusedSessionIds = useMonitorStore((state) => state.focusedSessionIds);
-  const toggleFocusedSession = useMonitorStore((state) => state.toggleFocusedSession);
-  const clearFocusedSessions = useMonitorStore((state) => state.clearFocusedSessions);
+  const activeSessionId = useMonitorStore((state) => state.activeSessionId);
 
-  const setSidebarCollapsed = useUiStore((state) => state.setSidebarCollapsed);
-
-  const [sessionQuery, setSessionQuery] = useState("");
-  const [sessionDrawerOpen, setSessionDrawerOpen] = useState(true);
-  const [activeSessionId, setActiveSessionId] = useState<string | undefined>();
   const [selectedPromptSliceId, setSelectedPromptSliceId] = useState("all");
   const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>();
   const [nodeFilters, setNodeFilters] = useState<RunTraceNodeFilters>(DEFAULT_NODE_FILTERS);
-  const autoCollapsedSidebarRef = useRef(false);
 
   useEffect(() => {
     startAutoRefresh(4000);
@@ -152,65 +141,28 @@ export function RunTracePanel() {
       .map((entry) => ({ session_id: entry.session_id, trace: entry.trace as RunTraceSummary }));
   }, [events]);
 
-  const selectedSessionIds = useMemo(
-    () => focusedSessionIds.filter((sessionId) => sessionEntries.some((entry) => entry.session_id === sessionId)),
-    [focusedSessionIds, sessionEntries],
-  );
+  const sessions = useMemo(() => computeSessions(events), [events]);
 
-  const filteredSessionEntries = useMemo(() => {
-    const normalizedQuery = sessionQuery.trim().toLowerCase();
-    if (!normalizedQuery) return sessionEntries;
-
-    return sessionEntries.filter(({ session_id, trace }) => {
-      return (
-        session_id.toLowerCase().includes(normalizedQuery) ||
-        trace.top_tools.some(([tool]) => tool.toLowerCase().includes(normalizedQuery)) ||
-        trace.models_used.some((model) => model.toLowerCase().includes(normalizedQuery))
-      );
-    });
-  }, [sessionEntries, sessionQuery]);
-
-  useEffect(() => {
-    if (selectedSessionIds.length === 0) {
-      setActiveSessionId(undefined);
-      setSelectedNodeId(undefined);
-      setSelectedPromptSliceId("all");
-      setSessionDrawerOpen(true);
-      autoCollapsedSidebarRef.current = false;
-      return;
+  const resolvedSessionId = useMemo(() => {
+    if (activeSessionId && sessionEntries.some((entry) => entry.session_id === activeSessionId)) {
+      return activeSessionId;
     }
-
-    if (!activeSessionId || !selectedSessionIds.includes(activeSessionId)) {
-      setActiveSessionId(selectedSessionIds[0]);
-    }
-  }, [activeSessionId, selectedSessionIds]);
-
-  useEffect(() => {
-    if (selectedSessionIds.length > 0 && !autoCollapsedSidebarRef.current) {
-      setSidebarCollapsed(true);
-      setSessionDrawerOpen(false);
-      autoCollapsedSidebarRef.current = true;
-    }
-  }, [selectedSessionIds.length, setSidebarCollapsed]);
+    return sessionEntries[0]?.session_id;
+  }, [activeSessionId, sessionEntries]);
 
   useEffect(() => {
     setSelectedPromptSliceId("all");
     setSelectedNodeId(undefined);
-  }, [activeSessionId]);
+  }, [resolvedSessionId]);
 
   const runModel = useMemo(
-    () =>
-      activeSessionId
-        ? deriveRunTraceModel(events, activeSessionId, {
-            promptSliceId: selectedPromptSliceId === "all" ? undefined : selectedPromptSliceId,
-          })
-        : null,
-    [activeSessionId, events, selectedPromptSliceId],
+    () => (resolvedSessionId ? deriveRunTraceModel(events, resolvedSessionId) : null),
+    [resolvedSessionId, events],
   );
 
   const activeEntry = useMemo(
-    () => sessionEntries.find((entry) => entry.session_id === activeSessionId),
-    [activeSessionId, sessionEntries],
+    () => sessionEntries.find((entry) => entry.session_id === resolvedSessionId),
+    [resolvedSessionId, sessionEntries],
   );
 
   const promptOptions = useMemo(
@@ -234,14 +186,6 @@ export function RunTracePanel() {
     [promptOptions, selectedPromptSliceId],
   );
 
-  const selectedEntries = useMemo(
-    () =>
-      selectedSessionIds
-        .map((sessionId) => sessionEntries.find((entry) => entry.session_id === sessionId))
-        .filter((entry): entry is SessionTraceEntry => Boolean(entry)),
-    [selectedSessionIds, sessionEntries],
-  );
-
   const availableTools = useMemo(() => {
     if (!runModel) return [];
     return [...new Set(runModel.lanes.flatMap((lane) => lane.nodes.flatMap((node) => node.tool_names)))].sort(
@@ -260,29 +204,6 @@ export function RunTracePanel() {
       setSelectedNodeId(undefined);
     }
   }, [runModel, selectedNodeId]);
-
-  const handleToggleSession = (sessionId: string) => {
-    const isSelected = selectedSessionIds.includes(sessionId);
-    toggleFocusedSession(sessionId);
-
-    if (!isSelected) {
-      setActiveSessionId(sessionId);
-      return;
-    }
-
-    if (activeSessionId === sessionId) {
-      const nextSelected = selectedSessionIds.filter((candidate) => candidate !== sessionId);
-      setActiveSessionId(nextSelected[0]);
-    }
-  };
-
-  const handleOpenSession = (sessionId: string) => {
-    if (!selectedSessionIds.includes(sessionId)) {
-      toggleFocusedSession(sessionId);
-    }
-    setActiveSessionId(sessionId);
-    setSessionDrawerOpen(false);
-  };
 
   const handleStepPrompt = useCallback(
     (direction: -1 | 1) => {
@@ -351,30 +272,10 @@ export function RunTracePanel() {
   return (
     <div className="relative flex flex-1 min-h-0 flex-col bg-background">
       <div className="border-b bg-background/95 px-4 py-3 backdrop-blur">
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" onClick={() => setSessionDrawerOpen((open) => !open)}>
-            <LayoutPanelLeft className="h-4 w-4" />
-            Sessions
-            <Badge variant="secondary" className="ml-1 text-[10px]">
-              {selectedSessionIds.length}
-            </Badge>
-          </Button>
+        <div className="flex flex-wrap items-end gap-3">
+          <SessionPicker sessions={sessions} selectClassName="min-w-[280px]" />
 
-          <Select
-            value={activeSessionId ?? ""}
-            onChange={(event) => setActiveSessionId(event.target.value || undefined)}
-            className="min-w-[220px]"
-            disabled={selectedEntries.length === 0}
-          >
-            <option value="">Active session</option>
-            {selectedEntries.map((entry) => (
-              <option key={entry.session_id} value={entry.session_id}>
-                {formatSessionId(entry.session_id)} · {formatDurationCompact(entry.trace.duration_seconds)}
-              </option>
-            ))}
-          </Select>
-
-          <div className="flex items-center gap-2">
+          <div className="flex items-end gap-2">
             <Button
               variant="outline"
               size="icon"
@@ -385,18 +286,21 @@ export function RunTracePanel() {
               <ChevronLeft className="h-4 w-4" />
             </Button>
 
-            <Select
-              value={selectedPromptSliceId}
-              onChange={(event) => setSelectedPromptSliceId(event.target.value)}
-              className="min-w-[260px]"
-              disabled={!runModel}
-            >
-              {promptOptions.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.label} · {option.subtitle.slice(0, 72)}
-                </option>
-              ))}
-            </Select>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Prompt slice</label>
+              <Select
+                value={selectedPromptSliceId}
+                onChange={(event) => setSelectedPromptSliceId(event.target.value)}
+                className="min-w-[260px]"
+                disabled={!runModel}
+              >
+                {promptOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label} · {option.subtitle.slice(0, 72)}
+                  </option>
+                ))}
+              </Select>
+            </div>
 
             <Button
               variant="outline"
@@ -416,11 +320,6 @@ export function RunTracePanel() {
           >
             <RotateCcw className="h-4 w-4" />
             Reset filters
-          </Button>
-
-          <Button variant="ghost" onClick={() => clearFocusedSessions()} disabled={selectedSessionIds.length === 0}>
-            <X className="h-4 w-4" />
-            Clear selection
           </Button>
         </div>
 
@@ -521,13 +420,13 @@ export function RunTracePanel() {
           </Select>
         </div>
 
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
+        <div className="mt-3 flex w-full min-w-0 items-center gap-2">
+          <span className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-muted-foreground">
             <MessageSquareText className="h-3.5 w-3.5" />
             Quick message switch
           </span>
-          <ScrollArea orientation="horizontal" className="max-w-full whitespace-nowrap">
-            <div className="flex gap-2 pr-2">
+          <ScrollArea orientation="horizontal" className="min-w-0 flex-1 whitespace-nowrap">
+            <div className="flex w-max gap-2 pr-2">
               {promptOptions.map((option, index) => {
                 const active = option.id === selectedPromptSliceId;
                 return (
@@ -584,11 +483,8 @@ export function RunTracePanel() {
 
         <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <Filter className="h-3.5 w-3.5" />
-          <FilterPill active={selectedSessionIds.length > 0}>
-            {selectedSessionIds.length} selected session{selectedSessionIds.length === 1 ? "" : "s"}
-          </FilterPill>
-          <FilterPill active={Boolean(activeSessionId)}>
-            viewing {activeSessionId ? formatSessionId(activeSessionId) : "no session"}
+          <FilterPill active={Boolean(resolvedSessionId)}>
+            viewing {resolvedSessionId ? formatSessionId(resolvedSessionId) : "no session"}
           </FilterPill>
           <FilterPill active={activeFilterCount > 0}>{activeFilterCount} active node filter{activeFilterCount === 1 ? "" : "s"}</FilterPill>
           {activeEntry && (
@@ -612,7 +508,6 @@ export function RunTracePanel() {
         <div
           className="h-full w-full transition-[padding] duration-200"
           style={{
-            paddingLeft: sessionDrawerOpen ? 360 : 0,
             paddingRight: selectedNodeId ? 420 : 0,
           }}
         >
@@ -623,6 +518,9 @@ export function RunTracePanel() {
                 filters={nodeFilters}
                 selectedNodeId={selectedNodeId}
                 onSelectNode={setSelectedNodeId}
+                focusedPromptSliceId={
+                  selectedPromptSliceId === "all" ? undefined : selectedPromptSliceId
+                }
                 onVisibleNodeIdsChange={(visibleNodeIds) => {
                   if (selectedNodeId && !visibleNodeIds.includes(selectedNodeId)) {
                     setSelectedNodeId(undefined);
@@ -633,129 +531,15 @@ export function RunTracePanel() {
               <div className="flex h-full items-center justify-center rounded-2xl border border-dashed bg-muted/10 px-6 text-center">
                 <div className="max-w-lg space-y-3">
                   <PanelsTopLeft className="mx-auto h-8 w-8 text-muted-foreground" />
-                  <p className="text-base font-medium">Choose one or more sessions to enter the flow view.</p>
+                  <p className="text-base font-medium">No session selected.</p>
                   <p className="text-sm text-muted-foreground">
-                    After you select sessions, the picker collapses, the navigation sidebar closes, and the full React Flow viewer takes over the screen.
+                    Pick a session from the dropdown above to render its run trace.
                   </p>
                 </div>
               </div>
             )}
           </div>
         </div>
-
-        <aside
-          className={cn(
-            "absolute inset-y-0 left-0 z-20 w-[360px] border-r bg-background/95 shadow-2xl backdrop-blur transition-transform duration-200",
-            sessionDrawerOpen ? "translate-x-0" : "-translate-x-full",
-          )}
-        >
-          <div className="flex h-full flex-col">
-            <div className="flex items-start justify-between gap-3 border-b px-5 py-4">
-              <div>
-                <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
-                  Session picker
-                </p>
-                <h2 className="mt-1 text-lg font-semibold">Select sessions</h2>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Build a working set, then inspect one active session in the full flow view.
-                </p>
-              </div>
-              {selectedSessionIds.length > 0 && (
-                <Button variant="ghost" size="icon" onClick={() => setSessionDrawerOpen(false)}>
-                  <X className="h-4 w-4" />
-                </Button>
-              )}
-            </div>
-
-            <div className="border-b px-5 py-4">
-              <Input
-                value={sessionQuery}
-                onChange={(event) => setSessionQuery(event.target.value)}
-                placeholder="Search by session, tool, or model"
-              />
-              <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                <FilterPill active={selectedSessionIds.length > 0}>
-                  {selectedSessionIds.length} selected
-                </FilterPill>
-                <FilterPill active={Boolean(activeSessionId)}>
-                  active {activeSessionId ? formatSessionId(activeSessionId) : "none"}
-                </FilterPill>
-              </div>
-            </div>
-
-            <ScrollArea className="flex-1 px-4 py-4">
-              <div className="space-y-3">
-                {filteredSessionEntries.map(({ session_id, trace }) => {
-                  const selected = selectedSessionIds.includes(session_id);
-                  const active = activeSessionId === session_id;
-                  return (
-                    <div
-                      key={session_id}
-                      className={cn(
-                        "rounded-2xl border p-4 transition-colors",
-                        active
-                          ? "border-primary bg-primary/5 shadow-sm"
-                          : selected
-                            ? "border-primary/40 bg-primary/[0.03]"
-                            : "border-border hover:border-primary/30 hover:bg-muted/40",
-                      )}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <button type="button" className="min-w-0 flex-1 text-left" onClick={() => handleOpenSession(session_id)}>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Badge variant={getSeverityVariant(trace.severity)}>{trace.severity}</Badge>
-                            {active && (
-                              <Badge variant="secondary" className="text-[10px]">
-                                active
-                              </Badge>
-                            )}
-                          </div>
-                          <p className="mt-2 font-mono text-xs text-muted-foreground">{formatSessionId(session_id)}</p>
-                          <p className="mt-2 text-sm font-medium">{formatDateTime(trace.first_timestamp)}</p>
-                        </button>
-                        <Button
-                          variant={selected ? "secondary" : "outline"}
-                          size="sm"
-                          onClick={() => handleToggleSession(session_id)}
-                        >
-                          {selected ? (
-                            <>
-                              <CheckCircle2 className="h-3.5 w-3.5" />
-                              Selected
-                            </>
-                          ) : (
-                            "Add"
-                          )}
-                        </Button>
-                      </div>
-
-                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-                        <span>{trace.prompt_count} prompt{trace.prompt_count === 1 ? "" : "s"}</span>
-                        <span>{trace.branch_count} branch{trace.branch_count === 1 ? "" : "es"}</span>
-                        <span>{formatDurationCompact(trace.duration_seconds)}</span>
-                        <span>{formatCost(trace.total_cost_usd)}</span>
-                      </div>
-
-                      <div className="mt-3 flex flex-wrap gap-1">
-                        {trace.top_tools.slice(0, 3).map(([tool, count]) => (
-                          <Badge key={`${session_id}:${tool}`} variant="outline" className="text-[10px]">
-                            {tool} × {count}
-                          </Badge>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })}
-
-                {filteredSessionEntries.length === 0 && (
-                  <div className="rounded-2xl border border-dashed p-6 text-center text-sm text-muted-foreground">
-                    No sessions match that query.
-                  </div>
-                )}
-              </div>
-            </ScrollArea>
-          </div>
-        </aside>
 
         {runModel && (
           <RunTraceInspectorDrawer

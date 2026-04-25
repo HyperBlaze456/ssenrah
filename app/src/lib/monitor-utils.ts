@@ -44,7 +44,15 @@ const THRASH_TOOL_COUNT = 8;
 const THRASH_WINDOW_MS = 30000;
 const ERROR_CASCADE_COUNT = 5;
 const ERROR_CASCADE_WINDOW_MS = 60000;
-const COST_SPIKE_USD = 2.0;
+const COST_SPIKE_USD_DEFAULT = 5.0;
+const SESSION_DURATION_WARNING_DEFAULT = 7200;
+
+export interface MonitorThresholds {
+  /** Cost in USD that turns a session warning/anomaly. */
+  costUsd?: number;
+  /** Session duration in seconds that turns a session warning. */
+  durationSeconds?: number;
+}
 
 function normalizeText(value: string | undefined): string {
   return (value ?? "")
@@ -224,9 +232,14 @@ export function getEventFingerprint(event: AgentEvent): string {
   return `${event.session_id}::${event.hook_event_type}::${details}`;
 }
 
-export function getSessionSeverity(session: SessionSummary): MonitorSeverity {
+export function getSessionSeverity(
+  session: SessionSummary,
+  thresholds: MonitorThresholds = {},
+): MonitorSeverity {
+  const costThreshold = thresholds.costUsd ?? COST_SPIKE_USD_DEFAULT;
+  const durationThreshold = thresholds.durationSeconds ?? SESSION_DURATION_WARNING_DEFAULT;
   if (session.errors > 0) return "critical";
-  if (session.cost_usd >= 5 || session.duration_seconds >= 7200) {
+  if (session.cost_usd >= costThreshold || session.duration_seconds >= durationThreshold) {
     return "warning";
   }
   return "info";
@@ -240,7 +253,11 @@ export function getAnomalyKey(anomaly: MonitorAnomaly): string {
   ].join("::");
 }
 
-export function detectAnomalies(events: AgentEvent[]): MonitorAnomaly[] {
+export function detectAnomalies(
+  events: AgentEvent[],
+  thresholds: MonitorThresholds = {},
+): MonitorAnomaly[] {
+  const costThreshold = thresholds.costUsd ?? COST_SPIKE_USD_DEFAULT;
   const anomalies: MonitorAnomaly[] = [];
   const sessions = new Map<string, AgentEvent[]>();
 
@@ -359,14 +376,14 @@ export function detectAnomalies(events: AgentEvent[]): MonitorAnomaly[] {
     }
 
     const totalCost = getAuthoritativeSessionCost(sessionEvents);
-    if (totalCost <= COST_SPIKE_USD) continue;
+    if (totalCost <= costThreshold) continue;
 
     anomalies.push({
       type: "cost_spike",
-      severity: totalCost > COST_SPIKE_USD * 3 ? "critical" : "warning",
+      severity: totalCost > costThreshold * 3 ? "critical" : "warning",
       session_id: sessionId,
       timestamp: sessionEvents[sessionEvents.length - 1]?.timestamp ?? "",
-      message: `Session cost $${totalCost.toFixed(2)} exceeds $${COST_SPIKE_USD.toFixed(2)}`,
+      message: `Session cost $${totalCost.toFixed(2)} exceeds $${costThreshold.toFixed(2)}`,
       evidence: { events: [], count: 1 },
     });
   }

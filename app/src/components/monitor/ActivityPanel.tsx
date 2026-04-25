@@ -5,8 +5,6 @@ import { formatProviderLabel } from "@/types";
 import {
   deriveActorFlows,
   deriveTelemetryTimeline,
-  getPrimarySessionId,
-  getScopedEvents,
   summarizeTasks,
   type ActorFlow,
   type FlowStatus,
@@ -18,6 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { SessionPicker } from "@/components/monitor/SessionPicker";
 import { cn } from "@/lib/utils";
 import {
   Activity,
@@ -274,9 +273,7 @@ export function ActivityPanel() {
   const error = useMonitorStore((state) => state.error);
   const startAutoRefresh = useMonitorStore((state) => state.startAutoRefresh);
   const stopAutoRefresh = useMonitorStore((state) => state.stopAutoRefresh);
-  const focusedSessionIds = useMonitorStore((state) => state.focusedSessionIds);
-  const focusSingleSession = useMonitorStore((state) => state.focusSingleSession);
-  const clearFocusedSessions = useMonitorStore((state) => state.clearFocusedSessions);
+  const activeSessionId = useMonitorStore((state) => state.activeSessionId);
 
   const [query, setQuery] = useState("");
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>("all");
@@ -284,24 +281,24 @@ export function ActivityPanel() {
   const [viewMode, setViewMode] = useState<ActivityViewMode>("flow");
 
   const sessions = useMemo(() => computeSessions(events), [events]);
-  const focusedSessions = useMemo(
-    () => sessions.filter((session) => focusedSessionIds.includes(session.session_id)),
-    [focusedSessionIds, sessions],
-  );
-  const scopedEvents = useMemo(() => getScopedEvents(events, focusedSessionIds), [events, focusedSessionIds]);
-  const primarySessionId = useMemo(
-    () => getPrimarySessionId(scopedEvents, focusedSessionIds),
-    [scopedEvents, focusedSessionIds],
+  const primarySessionId = useMemo(() => {
+    if (activeSessionId && sessions.some((session) => session.session_id === activeSessionId)) {
+      return activeSessionId;
+    }
+    return sessions[0]?.session_id;
+  }, [activeSessionId, sessions]);
+
+  const sessionEvents = useMemo(
+    () =>
+      primarySessionId ? events.filter((event) => event.session_id === primarySessionId) : [],
+    [events, primarySessionId],
   );
 
-  const allScopedRecords = useMemo(() => deriveTelemetryTimeline(scopedEvents), [scopedEvents]);
-  const sessionRecords = useMemo(
-    () => (primarySessionId ? deriveTelemetryTimeline(scopedEvents, { session: primarySessionId }) : []),
-    [primarySessionId, scopedEvents],
-  );
+  const allScopedRecords = useMemo(() => deriveTelemetryTimeline(sessionEvents), [sessionEvents]);
+  const sessionRecords = allScopedRecords;
   const sessionTaskCount = useMemo(
-    () => (primarySessionId ? summarizeTasks(scopedEvents, { session: primarySessionId }).length : 0),
-    [primarySessionId, scopedEvents],
+    () => (primarySessionId ? summarizeTasks(sessionEvents).length : 0),
+    [primarySessionId, sessionEvents],
   );
 
   const normalizedQuery = query.trim().toLowerCase();
@@ -381,36 +378,6 @@ export function ActivityPanel() {
 
   return (
     <div className="space-y-6">
-      {focusedSessions.length > 0 && (
-        <Card className="border-primary/20 bg-primary/5">
-          <CardContent className="flex flex-col gap-3 py-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="space-y-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge variant="secondary">Scoped to focused sessions</Badge>
-                <span className="text-sm font-medium">
-                  {focusedSessions.length} session{focusedSessions.length !== 1 ? "s" : ""}
-                </span>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {focusedSessions.map((session) => (
-                  <button
-                    key={session.session_id}
-                    type="button"
-                    onClick={() => focusSingleSession(session.session_id)}
-                    className="rounded-md border bg-background px-2 py-1 text-xs font-mono transition-colors hover:bg-muted"
-                  >
-                    {formatSessionId(session.session_id)}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <Button variant="ghost" size="sm" onClick={clearFocusedSessions}>
-              Clear focus
-            </Button>
-          </CardContent>
-        </Card>
-      )}
-
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
         <Card>
           <CardHeader className="pb-2">
@@ -429,7 +396,7 @@ export function ActivityPanel() {
             <CardTitle className="text-sm font-medium text-muted-foreground">Sessions</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{focusedSessionIds.length || sessions.length}</div>
+            <div className="text-2xl font-bold">{sessions.length}</div>
           </CardContent>
         </Card>
         <Card>
@@ -448,7 +415,7 @@ export function ActivityPanel() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {viewMode === "flow" ? sessionTaskCount : summarizeTasks(scopedEvents).length}
+              {viewMode === "flow" ? sessionTaskCount : summarizeTasks(sessionEvents).length}
             </div>
           </CardContent>
         </Card>
@@ -476,13 +443,14 @@ export function ActivityPanel() {
               <p className="mt-1 text-xs text-muted-foreground">
                 {viewMode === "flow"
                   ? primarySessionId
-                    ? `${focusedSessionIds.length > 0 ? "Focused" : "Latest"} session ${formatSessionId(primarySessionId)} shown as actor → task → tool flow.`
+                    ? `Session ${formatSessionId(primarySessionId)} shown as actor → task → tool flow.`
                     : "Select or create a session to inspect the execution flow."
-                  : `Showing ${visibleTimelineRecords.length} normalized rows from ${scopedEvents.length} raw events.`}
+                  : `Showing ${visibleTimelineRecords.length} normalized rows from ${sessionEvents.length} raw events.`}
               </p>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-[auto_minmax(0,1fr)_160px_160px]">
+            <div className="flex flex-wrap items-end gap-3">
+              <SessionPicker sessions={sessions} />
               <div className="space-y-1">
                 <label className="text-xs font-medium text-muted-foreground">View</label>
                 <div className="flex gap-2">

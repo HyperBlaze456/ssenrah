@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMonitorStore, computeSessions, useHarnessEvents } from "@/lib/store/monitor";
 import { useUiStore } from "@/lib/store/ui";
+import {
+  useEscalationStore,
+  getCostThreshold,
+  getDurationThreshold,
+} from "@/lib/store/escalation";
 import { formatProviderLabel } from "@/types";
 import {
   getScopedEvents,
@@ -38,6 +43,7 @@ import {
   Coins,
   Database,
   DollarSign,
+  SlidersHorizontal,
   Terminal,
   Zap,
 } from "lucide-react";
@@ -100,6 +106,7 @@ function formatOptionalDuration(seconds?: number): string {
 export function GeneralPanel() {
   const events = useHarnessEvents();
   const provider = useUiStore((state) => state.activeProvider);
+  const openAlertsConfig = useUiStore((state) => state.openAlertsConfig);
   const loading = useMonitorStore((state) => state.loading);
   const error = useMonitorStore((state) => state.error);
   const startAutoRefresh = useMonitorStore((state) => state.startAutoRefresh);
@@ -108,6 +115,25 @@ export function GeneralPanel() {
   const toggleFocusedSession = useMonitorStore((state) => state.toggleFocusedSession);
   const focusSingleSession = useMonitorStore((state) => state.focusSingleSession);
   const clearFocusedSessions = useMonitorStore((state) => state.clearFocusedSessions);
+
+  const escalationRules = useEscalationStore((state) => state.rules);
+  const escalationLoaded = useEscalationStore((state) => state.loaded);
+  const loadEscalationRules = useEscalationStore((state) => state.load);
+  useEffect(() => {
+    if (!escalationLoaded) {
+      void loadEscalationRules();
+    }
+  }, [escalationLoaded, loadEscalationRules]);
+
+  const costThreshold = getCostThreshold(escalationRules);
+  const durationThreshold = getDurationThreshold(escalationRules);
+  const severityThresholds = useMemo(
+    () => ({
+      costUsd: costThreshold ?? undefined,
+      durationSeconds: durationThreshold ?? undefined,
+    }),
+    [costThreshold, durationThreshold],
+  );
 
   const subagentLabel = provider === "codex" ? "Threads" : "Subagents";
 
@@ -208,8 +234,8 @@ export function GeneralPanel() {
       switch (sortMode) {
         case "severity": {
           const severityDelta =
-            monitorSeverityRank(getSessionSeverity(right)) -
-            monitorSeverityRank(getSessionSeverity(left));
+            monitorSeverityRank(getSessionSeverity(right, severityThresholds)) -
+            monitorSeverityRank(getSessionSeverity(left, severityThresholds));
           if (severityDelta !== 0) return severityDelta;
           return right.errors - left.errors;
         }
@@ -289,6 +315,16 @@ export function GeneralPanel() {
               {scopeLabel}
               {(loading || costLoading) && " · refreshing…"}
             </p>
+            <button
+              type="button"
+              onClick={() => openAlertsConfig("cost")}
+              className="mt-2 inline-flex items-center gap-1 rounded-md border bg-background px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-muted"
+            >
+              <SlidersHorizontal className="h-3 w-3" />
+              {costThreshold !== null
+                ? `Alerts above ${formatCost(costThreshold)} · Adjust`
+                : "Set cost alert limit"}
+            </button>
           </CardContent>
         </Card>
         <Card>
@@ -571,7 +607,7 @@ export function GeneralPanel() {
         </div>
       ) : (
         filteredSessions.map((session) => {
-          const severity = getSessionSeverity(session);
+          const severity = getSessionSeverity(session, severityThresholds);
           const isFocused = focusedSessionIds.includes(session.session_id);
           const isExpanded = expandedSessionId === session.session_id;
           const detailedCost = costsBySessionId.get(session.session_id);

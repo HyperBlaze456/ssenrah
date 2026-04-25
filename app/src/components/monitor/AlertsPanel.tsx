@@ -1,30 +1,36 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMonitorStore, computeSessions, useHarnessEvents } from "@/lib/store/monitor";
-import { readTextFile, exists, writeTextFile } from "@tauri-apps/plugin-fs";
-import { homeDir, join } from "@tauri-apps/api/path";
+import { useEscalationStore } from "@/lib/store/escalation";
+import { useUiStore, type AlertsConfigFocus } from "@/lib/store/ui";
 import {
   formatSeverityLabel,
   getSeverityBadgeVariant,
   summarizeEscalationAlerts,
   type MonitorSeverity,
 } from "@/lib/monitor-utils";
+import { cn } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
-import { AlertTriangle, Bell, Settings, Save } from "lucide-react";
+import { AlertTriangle, Bell, SlidersHorizontal, Save } from "lucide-react";
 
 type SeverityFilter = "all" | Exclude<MonitorSeverity, "info">;
 type AlertSortMode = "severity" | "recent" | "oldest";
 
-interface EscalationRule {
-  name: string;
-  condition: string;
-  threshold: number;
-  action: string;
-}
+const CONDITION_TO_FOCUS: Record<string, AlertsConfigFocus> = {
+  session_cost_exceeds: "cost",
+  error_count_exceeds: "errors",
+  session_duration_exceeds: "duration",
+};
+
+const FOCUS_TO_CONDITION: Record<Exclude<AlertsConfigFocus, null>, string> = {
+  cost: "session_cost_exceeds",
+  errors: "error_count_exceeds",
+  duration: "session_duration_exceeds",
+};
 
 function formatTime(iso: string): string {
   const date = new Date(iso);
@@ -94,13 +100,23 @@ export function AlertsPanel() {
   const restoreAlerts = useMonitorStore((state) => state.restoreAlerts);
   const clearDismissedAlerts = useMonitorStore((state) => state.clearDismissedAlerts);
 
-  const [rules, setRules] = useState<EscalationRule[]>([]);
-  const [configLoading, setConfigLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const rules = useEscalationStore((state) => state.rules);
+  const rulesLoaded = useEscalationStore((state) => state.loaded);
+  const configLoading = useEscalationStore((state) => state.loading);
+  const saving = useEscalationStore((state) => state.saving);
+  const loadRules = useEscalationStore((state) => state.load);
+  const updateRuleThreshold = useEscalationStore((state) => state.updateThreshold);
+  const saveRules = useEscalationStore((state) => state.save);
+
+  const alertsConfigFocus = useUiStore((state) => state.alertsConfigFocus);
+  const clearAlertsConfigFocus = useUiStore((state) => state.clearAlertsConfigFocus);
+
   const [showConfig, setShowConfig] = useState(false);
   const [query, setQuery] = useState("");
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>("all");
   const [sortMode, setSortMode] = useState<AlertSortMode>("severity");
+  const configCardRef = useRef<HTMLDivElement | null>(null);
+  const focusedRuleRef = useRef<HTMLDivElement | null>(null);
 
   const sessions = useMemo(() => computeSessions(events), [events]);
   const focusedSessions = useMemo(
@@ -166,47 +182,35 @@ export function AlertsPanel() {
   }, [startAutoRefresh, stopAutoRefresh]);
 
   useEffect(() => {
-    async function loadConfig() {
-      try {
-        const home = await homeDir();
-        const configPath = await join(home, ".ssenrah", "escalation.json");
-        const fileExists = await exists(configPath);
-        if (!fileExists) {
-          setRules([]);
-          setConfigLoading(false);
-          return;
-        }
-        const content = await readTextFile(configPath);
-        const config = JSON.parse(content);
-        setRules(config.rules ?? []);
-      } catch {
-        setRules([]);
-      }
-      setConfigLoading(false);
+    if (!rulesLoaded) {
+      void loadRules();
     }
-    loadConfig();
-  }, []);
+  }, [rulesLoaded, loadRules]);
 
-  async function saveConfig() {
-    setSaving(true);
-    try {
-      const home = await homeDir();
-      const configPath = await join(home, ".ssenrah", "escalation.json");
-      await writeTextFile(configPath, JSON.stringify({ rules }, null, 2) + "\n");
-    } catch (err) {
-      console.error("Failed to save escalation config:", err);
+  // Auto-open the rules section whenever a deep-link focus is set, or whenever
+  // there are active alerts the user might want to silence by raising a limit.
+  const hasActiveAlerts = alertGroups.some(
+    (alert) => !dismissedAlertKeys[alert.key],
+  );
+  useEffect(() => {
+    if (alertsConfigFocus || hasActiveAlerts) {
+      setShowConfig(true);
     }
-    setSaving(false);
-  }
+  }, [alertsConfigFocus, hasActiveAlerts]);
+
+  useEffect(() => {
+    if (!showConfig || !alertsConfigFocus) return;
+    const timer = window.setTimeout(() => {
+      const target = focusedRuleRef.current ?? configCardRef.current;
+      target?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [showConfig, alertsConfigFocus, rules.length]);
 
   function updateThreshold(index: number, value: string) {
     const num = parseFloat(value);
     if (isNaN(num)) return;
-    setRules((previous) => {
-      const next = [...previous];
-      next[index] = { ...next[index]!, threshold: num };
-      return next;
-    });
+    updateRuleThreshold(index, num);
   }
 
   return (
@@ -363,6 +367,7 @@ export function AlertsPanel() {
               {renderedAlerts.map((alert) => {
                 const dismissed = Boolean(dismissedAlertKeys[alert.key]);
                 const unit = thresholdUnit(alert.condition);
+                const focusForCondition = CONDITION_TO_FOCUS[alert.condition];
                 return (
                   <div
                     key={alert.key}
@@ -404,6 +409,20 @@ export function AlertsPanel() {
                         <span className="text-[10px] text-muted-foreground">
                           {formatTime(alert.last_timestamp)}
                         </span>
+                        {focusForCondition && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="gap-1"
+                            onClick={() => {
+                              setShowConfig(true);
+                              useUiStore.getState().openAlertsConfig(focusForCondition);
+                            }}
+                          >
+                            <SlidersHorizontal className="h-3.5 w-3.5" />
+                            Adjust limit
+                          </Button>
+                        )}
                         <Button
                           variant="ghost"
                           size="sm"
@@ -423,21 +442,30 @@ export function AlertsPanel() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card ref={configCardRef} className={alertsConfigFocus ? "border-primary/40" : undefined}>
         <CardHeader className="pb-2">
-          <div className="flex items-center justify-between">
-            <CardTitle className="flex items-center gap-2 text-sm font-medium">
-              <Settings className="h-4 w-4" />
-              Escalation Rules
-            </CardTitle>
-            <Button variant="ghost" size="sm" onClick={() => setShowConfig(!showConfig)}>
-              {showConfig ? "Hide" : "Configure"}
+          <div className="flex items-start justify-between gap-3">
+            <div className="space-y-1">
+              <CardTitle className="flex items-center gap-2 text-sm font-medium">
+                <SlidersHorizontal className="h-4 w-4" />
+                Adjust thresholds
+              </CardTitle>
+              <p className="text-xs text-muted-foreground">
+                Raise or lower the limits that turn cost, error, and duration alerts on.
+              </p>
+            </div>
+            <Button
+              variant={showConfig ? "ghost" : "default"}
+              size="sm"
+              onClick={() => setShowConfig(!showConfig)}
+            >
+              {showConfig ? "Hide" : "Edit thresholds"}
             </Button>
           </div>
         </CardHeader>
         {showConfig && (
           <CardContent>
-            {configLoading ? (
+            {configLoading && rules.length === 0 ? (
               <p className="animate-pulse text-sm text-muted-foreground">
                 Loading config...
               </p>
@@ -449,35 +477,54 @@ export function AlertsPanel() {
               </p>
             ) : (
               <div className="space-y-4">
-                {rules.map((rule, index) => (
-                  <div key={index} className="flex items-end gap-4 rounded-md border p-3">
-                    <div className="flex-1">
-                      <Label className="text-xs text-muted-foreground">
-                        {rule.name}
-                      </Label>
-                      <p className="mt-1 text-sm">{conditionLabel(rule.condition)}</p>
+                {rules.map((rule, index) => {
+                  const isFocused =
+                    alertsConfigFocus !== null &&
+                    rule.condition === FOCUS_TO_CONDITION[alertsConfigFocus];
+                  return (
+                    <div
+                      key={index}
+                      ref={isFocused ? focusedRuleRef : undefined}
+                      className={cn(
+                        "flex items-end gap-4 rounded-md border p-3 transition-colors",
+                        isFocused && "border-primary/60 bg-primary/5 ring-2 ring-primary/30",
+                      )}
+                    >
+                      <div className="flex-1">
+                        <Label className="text-xs text-muted-foreground">
+                          {rule.name}
+                        </Label>
+                        <p className="mt-1 text-sm">{conditionLabel(rule.condition)}</p>
+                      </div>
+                      <div className="w-32">
+                        <Label className="text-xs text-muted-foreground">
+                          Threshold ({thresholdUnit(rule.condition)})
+                        </Label>
+                        <Input
+                          type="number"
+                          value={rule.threshold}
+                          onChange={(event) => updateThreshold(index, event.target.value)}
+                          className="mt-1 h-8"
+                        />
+                      </div>
+                      <Badge variant="outline" className="mb-1 shrink-0">
+                        {rule.action}
+                      </Badge>
                     </div>
-                    <div className="w-32">
-                      <Label className="text-xs text-muted-foreground">
-                        Threshold ({thresholdUnit(rule.condition)})
-                      </Label>
-                      <Input
-                        type="number"
-                        value={rule.threshold}
-                        onChange={(event) => updateThreshold(index, event.target.value)}
-                        className="mt-1 h-8"
-                      />
-                    </div>
-                    <Badge variant="outline" className="mb-1 shrink-0">
-                      {rule.action}
-                    </Badge>
-                  </div>
-                ))}
+                  );
+                })}
 
-                <Button onClick={saveConfig} disabled={saving} size="sm" className="gap-2">
-                  <Save className="h-3.5 w-3.5" />
-                  {saving ? "Saving..." : "Save Rules"}
-                </Button>
+                <div className="flex items-center gap-3">
+                  <Button onClick={() => void saveRules()} disabled={saving} size="sm" className="gap-2">
+                    <Save className="h-3.5 w-3.5" />
+                    {saving ? "Saving..." : "Save thresholds"}
+                  </Button>
+                  {alertsConfigFocus && (
+                    <Button variant="ghost" size="sm" onClick={clearAlertsConfigFocus}>
+                      Clear highlight
+                    </Button>
+                  )}
+                </div>
               </div>
             )}
           </CardContent>

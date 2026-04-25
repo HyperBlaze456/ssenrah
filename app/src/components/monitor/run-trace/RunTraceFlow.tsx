@@ -17,6 +17,7 @@ import {
   Bot,
   AlertCircle,
   GitBranch,
+  MessageSquareText,
   Shield,
   Sparkles,
   Terminal,
@@ -25,6 +26,7 @@ import {
 } from "lucide-react";
 import {
   formatDurationCompact,
+  type PromptSlice,
   type RunTraceCategory,
   type RunTraceLane,
   type RunTraceLaneKind,
@@ -53,6 +55,7 @@ interface RunTraceFlowProps {
   onSelectNode: (nodeId: string | undefined) => void;
   onVisibleNodeIdsChange?: (nodeIds: string[]) => void;
   filters: RunTraceNodeFilters;
+  focusedPromptSliceId?: string;
 }
 
 interface VisibleNodeEntry {
@@ -65,11 +68,33 @@ interface VisibleLane {
   nodes: VisibleNodeEntry[];
 }
 
-type LaneLabelNodeData = {
-  variant: "lane-label";
+interface ColumnTrack {
   lane: RunTraceLane;
-  visibleCount: number;
-};
+  isMain: boolean;
+  events: VisibleNodeEntry[];
+}
+
+interface MessageColumn {
+  id: string;
+  label: string;
+  promptText: string;
+  startTimestamp: string;
+  sliceIndex: number;
+  startMs: number;
+  endMs: number;
+  tracks: ColumnTrack[];
+  promptSlice?: PromptSlice;
+}
+
+interface ColumnLayout {
+  column: MessageColumn;
+  x: number;
+  width: number;
+  height: number;
+  trackXById: Map<string, number>;
+  eventYById: Map<string, number>;
+  pxPerSec: number;
+}
 
 type EventFlowNodeData = {
   variant: "event";
@@ -79,16 +104,32 @@ type EventFlowNodeData = {
   contextOnly: boolean;
 };
 
-type FlowNodeData = LaneLabelNodeData | EventFlowNodeData;
+type MessageHeaderNodeData = {
+  variant: "message-header";
+  column: MessageColumn;
+  width: number;
+  focused: boolean;
+};
 
-type FlowNode = Node<FlowNodeData, "laneLabel" | "event">;
+type FlowNodeData = EventFlowNodeData | MessageHeaderNodeData;
 
-const LANE_LABEL_X = 32;
-const LANE_NODE_START_X = 310;
-const MIN_TIMELINE_WIDTH = 2200;
-const LANE_HEIGHT = 220;
-const LANE_VERTICAL_START = 110;
-const NODE_GAP = 84;
+type FlowNode = Node<FlowNodeData, "event" | "messageHeader">;
+
+const COLUMN_HEADER_HEIGHT = 96;
+const COLUMN_HEADER_GAP = 28;
+const TRACK_WIDTH = 280;
+const TRACK_GAP = 28;
+const COLUMN_GAP = 96;
+const MIN_EVENT_GAP = 18;
+const ESTIMATED_CARD_HEIGHT = 118;
+const MIN_COL_HEIGHT = 420;
+const MAX_COL_HEIGHT = 1800;
+const IDEAL_PX_PER_SEC = 8;
+const PRE_PROMPT_COLUMN_ID = "pre-prompt";
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
 
 function formatTime(timestamp: string): string {
   return new Date(timestamp).toLocaleTimeString("en-US", {
@@ -138,8 +179,20 @@ function getNodeIcon(node: RunTraceNode) {
   }
 }
 
-function getLaneIcon(lane: RunTraceLane) {
-  switch (lane.kind) {
+function getLaneAccent(laneKind: RunTraceLaneKind): string {
+  switch (laneKind) {
+    case "main":
+      return "before:bg-primary/70";
+    case "teammate":
+      return "before:bg-blue-500/70";
+    case "subagent":
+    default:
+      return "before:bg-emerald-500/60";
+  }
+}
+
+function getLaneIcon(laneKind: RunTraceLaneKind) {
+  switch (laneKind) {
     case "subagent":
       return Bot;
     case "teammate":
@@ -166,38 +219,15 @@ function getCategoryClasses(category: RunTraceCategory): string {
   }
 }
 
-function getNodeWidth(node: RunTraceNode): number {
-  switch (node.kind) {
-    case "prompt":
-      return 300;
-    case "task":
-      return 260;
-    case "session":
-      return 220;
-    case "agent":
-      return 240;
-    case "failure":
-      return 250;
-    case "policy":
-      return 240;
-    case "inspection_block":
-      return 230;
-    case "tool":
-    case "event":
-    default:
-      return 250;
-  }
-}
-
 function getTrackColor(laneKind: RunTraceLaneKind): string {
   switch (laneKind) {
     case "main":
-      return "hsl(var(--primary) / 0.48)";
+      return "hsl(var(--primary) / 0.55)";
     case "teammate":
-      return "hsl(215 75% 55% / 0.45)";
+      return "hsl(215 75% 55% / 0.55)";
     case "subagent":
     default:
-      return "hsl(var(--border))";
+      return "hsl(150 60% 45% / 0.55)";
   }
 }
 
@@ -293,179 +323,308 @@ function buildVisibleLanes(model: RunTraceModel, filters: RunTraceNodeFilters) {
   };
 }
 
-function buildFlowElements(model: RunTraceModel, visibleLanes: VisibleLane[], selectedNodeId?: string) {
-  const startMs = new Date(model.summary.first_timestamp).getTime();
-  const endMs = new Date(model.summary.last_timestamp).getTime();
-  const durationMs = Math.max(1, endMs - startMs);
-  const maxNodeCount = Math.max(1, ...visibleLanes.map((lane) => lane.nodes.length));
-  const timelineWidth = Math.max(MIN_TIMELINE_WIDTH, maxNodeCount * 320);
+function buildMessageColumns(
+  model: RunTraceModel,
+  visibleLanes: VisibleLane[],
+): MessageColumn[] {
+  type ColumnDraft = Omit<MessageColumn, "tracks" | "startMs" | "endMs"> & {
+    tracks: Map<string, ColumnTrack>;
+  };
 
+  const drafts = new Map<string, ColumnDraft>();
+
+  model.prompt_slices.forEach((slice, index) => {
+    drafts.set(slice.id, {
+      id: slice.id,
+      label: `Msg ${index + 1}`,
+      promptText: slice.prompt,
+      startTimestamp: slice.start_timestamp,
+      sliceIndex: index,
+      promptSlice: slice,
+      tracks: new Map(),
+    });
+  });
+
+  drafts.set(PRE_PROMPT_COLUMN_ID, {
+    id: PRE_PROMPT_COLUMN_ID,
+    label: "Session start",
+    promptText: "Session-level events before the first user message",
+    startTimestamp: model.summary.first_timestamp,
+    sliceIndex: -1,
+    tracks: new Map(),
+  });
+
+  for (const visibleLane of visibleLanes) {
+    const lane = visibleLane.lane;
+    for (const entry of visibleLane.nodes) {
+      const rawSliceId = entry.node.prompt_slice_id ?? PRE_PROMPT_COLUMN_ID;
+      const draft = drafts.get(rawSliceId) ?? drafts.get(PRE_PROMPT_COLUMN_ID)!;
+
+      let track = draft.tracks.get(lane.id);
+      if (!track) {
+        track = {
+          lane,
+          isMain: lane.kind === "main",
+          events: [],
+        };
+        draft.tracks.set(lane.id, track);
+      }
+      track.events.push(entry);
+    }
+  }
+
+  const columns: MessageColumn[] = [];
+
+  for (const draft of drafts.values()) {
+    if (draft.tracks.size === 0) continue;
+
+    const tracks = Array.from(draft.tracks.values());
+
+    for (const track of tracks) {
+      track.events.sort((left, right) =>
+        left.node.start_timestamp.localeCompare(right.node.start_timestamp),
+      );
+    }
+
+    let startMs = Number.POSITIVE_INFINITY;
+    let endMs = Number.NEGATIVE_INFINITY;
+    for (const track of tracks) {
+      for (const entry of track.events) {
+        const eventStart = new Date(entry.node.start_timestamp).getTime();
+        const eventEnd = eventStart + Math.max(0, entry.node.duration_ms);
+        if (eventStart < startMs) startMs = eventStart;
+        if (eventEnd > endMs) endMs = eventEnd;
+      }
+    }
+    if (!Number.isFinite(startMs)) startMs = new Date(draft.startTimestamp).getTime();
+    if (!Number.isFinite(endMs)) endMs = startMs;
+
+    tracks.sort((left, right) => {
+      if (left.isMain && !right.isMain) return -1;
+      if (!left.isMain && right.isMain) return 1;
+      const leftStart = left.events[0]
+        ? new Date(left.events[0].node.start_timestamp).getTime()
+        : 0;
+      const rightStart = right.events[0]
+        ? new Date(right.events[0].node.start_timestamp).getTime()
+        : 0;
+      return leftStart - rightStart;
+    });
+
+    columns.push({
+      id: draft.id,
+      label: draft.label,
+      promptText: draft.promptText,
+      startTimestamp: draft.startTimestamp,
+      sliceIndex: draft.sliceIndex,
+      promptSlice: draft.promptSlice,
+      startMs,
+      endMs,
+      tracks,
+    });
+  }
+
+  columns.sort((left, right) => left.sliceIndex - right.sliceIndex);
+  return columns;
+}
+
+function layoutColumns(columns: MessageColumn[]): ColumnLayout[] {
+  const layouts: ColumnLayout[] = [];
+  let currentX = 0;
+
+  for (const column of columns) {
+    const numTracks = column.tracks.length;
+    const width = numTracks * TRACK_WIDTH + Math.max(0, numTracks - 1) * TRACK_GAP;
+
+    const trackXById = new Map<string, number>();
+    column.tracks.forEach((track, index) => {
+      trackXById.set(track.lane.id, currentX + index * (TRACK_WIDTH + TRACK_GAP));
+    });
+
+    const durationSec = Math.max(1, (column.endMs - column.startMs) / 1000);
+    const targetHeight = clamp(durationSec * IDEAL_PX_PER_SEC, MIN_COL_HEIGHT, MAX_COL_HEIGHT);
+    const pxPerSec = targetHeight / durationSec;
+
+    const eventYById = new Map<string, number>();
+    const baseY = COLUMN_HEADER_HEIGHT + COLUMN_HEADER_GAP;
+
+    let maxBottom = baseY;
+    for (const track of column.tracks) {
+      let prevBottom = -Infinity;
+      for (const entry of track.events) {
+        const startMs = new Date(entry.node.start_timestamp).getTime();
+        const proportionalY = baseY + ((startMs - column.startMs) / 1000) * pxPerSec;
+        const y = Math.max(proportionalY, prevBottom + MIN_EVENT_GAP);
+        eventYById.set(entry.node.id, y);
+        prevBottom = y + ESTIMATED_CARD_HEIGHT;
+        if (prevBottom > maxBottom) maxBottom = prevBottom;
+      }
+    }
+
+    const height = Math.max(MIN_COL_HEIGHT, maxBottom - baseY + COLUMN_HEADER_HEIGHT);
+
+    layouts.push({
+      column,
+      x: currentX,
+      width,
+      height,
+      trackXById,
+      eventYById,
+      pxPerSec,
+    });
+
+    currentX += width + COLUMN_GAP;
+  }
+
+  return layouts;
+}
+
+function buildFlowElements(
+  layouts: ColumnLayout[],
+  selectedNodeId?: string,
+  focusedPromptSliceId?: string,
+) {
   const nodes: FlowNode[] = [];
   const edges: Edge[] = [];
 
-  for (const [laneIndex, visibleLane] of visibleLanes.entries()) {
-    const { lane } = visibleLane;
-    const y = LANE_VERTICAL_START + laneIndex * LANE_HEIGHT;
-    const labelNodeId = `${lane.id}:label`;
+  for (const layout of layouts) {
+    const { column } = layout;
 
     nodes.push({
-      id: labelNodeId,
-      type: "laneLabel",
-      position: { x: LANE_LABEL_X, y },
+      id: `header:${column.id}`,
+      type: "messageHeader",
+      position: { x: layout.x, y: 0 },
       data: {
-        variant: "lane-label",
-        lane,
-        visibleCount: visibleLane.nodes.length,
+        variant: "message-header",
+        column,
+        width: layout.width,
+        focused: focusedPromptSliceId === column.id,
       },
       draggable: false,
       selectable: false,
       focusable: false,
-      sourcePosition: Position.Right,
+      style: { width: layout.width },
     });
 
-    let nextLeft = LANE_NODE_START_X;
-    const orderedNodes = [...visibleLane.nodes].sort((left, right) =>
-      left.node.start_timestamp.localeCompare(right.node.start_timestamp),
-    );
+    for (const track of column.tracks) {
+      const trackX = layout.trackXById.get(track.lane.id)!;
 
-    orderedNodes.forEach(({ node, contextOnly }) => {
-      const width = getNodeWidth(node);
-      const centerMs = new Date(node.start_timestamp).getTime() + node.duration_ms / 2;
-      const leftPct = (centerMs - startMs) / durationMs;
-      const idealLeft = LANE_NODE_START_X + leftPct * timelineWidth - width / 2;
-      const left = Math.max(LANE_NODE_START_X, Math.max(idealLeft, nextLeft));
-      nextLeft = left + width + NODE_GAP;
+      track.events.forEach((entry, eventIndex) => {
+        const y = layout.eventYById.get(entry.node.id)!;
+        nodes.push({
+          id: entry.node.id,
+          type: "event",
+          position: { x: trackX, y },
+          data: {
+            variant: "event",
+            lane: track.lane,
+            node: entry.node,
+            severity: getNodeSeverity(entry.node),
+            contextOnly: entry.contextOnly,
+          },
+          draggable: false,
+          selectable: true,
+          selected: entry.node.id === selectedNodeId,
+          style: { width: TRACK_WIDTH },
+        });
 
-      nodes.push({
-        id: node.id,
-        type: "event",
-        position: { x: left, y },
-        data: {
-          variant: "event",
-          lane,
-          node,
-          severity: getNodeSeverity(node),
-          contextOnly,
-        },
-        draggable: false,
-        selectable: true,
-        sourcePosition: Position.Right,
-        targetPosition: Position.Left,
-        selected: node.id === selectedNodeId,
-        style: {
-          width,
-        },
+        if (eventIndex > 0) {
+          const prev = track.events[eventIndex - 1]!.node;
+          edges.push({
+            id: `seq:${track.lane.id}:${prev.id}:${entry.node.id}`,
+            source: prev.id,
+            sourceHandle: "bottom",
+            target: entry.node.id,
+            targetHandle: "top",
+            type: "straight",
+            style: {
+              stroke: getTrackColor(track.lane.kind),
+              strokeWidth: track.isMain ? 2.6 : 1.8,
+              strokeDasharray: track.isMain ? undefined : "8 6",
+            },
+            selectable: false,
+            focusable: false,
+          });
+        }
       });
-    });
 
-    if (orderedNodes.length === 0) {
-      continue;
-    }
-
-    edges.push({
-      id: `${lane.id}:lane-start`,
-      source: labelNodeId,
-      target: orderedNodes[0]!.node.id,
-      type: "straight",
-      style: {
-        stroke: getTrackColor(lane.kind),
-        strokeWidth: lane.kind === "main" ? 2.8 : 1.8,
-        strokeDasharray: lane.kind === "main" ? undefined : "8 6",
-      },
-      selectable: false,
-      focusable: false,
-    });
-
-    for (let index = 0; index < orderedNodes.length - 1; index += 1) {
-      const current = orderedNodes[index]!.node;
-      const next = orderedNodes[index + 1]!.node;
-      edges.push({
-        id: `${lane.id}:track:${current.id}:${next.id}`,
-        source: current.id,
-        target: next.id,
-        type: "straight",
-        style: {
-          stroke: getTrackColor(lane.kind),
-          strokeWidth: lane.kind === "main" ? 2.8 : 1.8,
-          strokeDasharray: lane.kind === "main" ? undefined : "8 6",
-        },
-        selectable: false,
-        focusable: false,
-      });
-    }
-
-    if (lane.parent_lane_id && lane.branch_summary_node_id) {
-      edges.push({
-        id: `${lane.id}:branch`,
-        source: lane.branch_summary_node_id,
-        target: orderedNodes[0]!.node.id,
-        type: "smoothstep",
-        style: {
-          stroke: "hsl(var(--primary) / 0.48)",
-          strokeWidth: 2.2,
-          strokeDasharray: lane.kind === "teammate" ? "10 8" : undefined,
-        },
-        markerEnd: {
-          type: MarkerType.ArrowClosed,
-          color: "hsl(var(--primary) / 0.48)",
-          width: 16,
-          height: 16,
-        },
-        selectable: false,
-        focusable: false,
-      });
+      const branchSummaryNodeId = track.lane.branch_summary_node_id;
+      if (!track.isMain && branchSummaryNodeId && track.events.length > 0) {
+        const parentInColumn = column.tracks
+          .flatMap((other) => other.events)
+          .some((other) => other.node.id === branchSummaryNodeId);
+        if (parentInColumn) {
+          const firstEvent = track.events[0]!.node;
+          edges.push({
+            id: `fork:${track.lane.id}:${firstEvent.id}`,
+            source: branchSummaryNodeId,
+            sourceHandle: "fork-out",
+            target: firstEvent.id,
+            targetHandle: "top",
+            type: "step",
+            style: {
+              stroke: getTrackColor(track.lane.kind),
+              strokeWidth: 2.2,
+              strokeDasharray: track.lane.kind === "teammate" ? "10 6" : "6 6",
+            },
+            markerEnd: {
+              type: MarkerType.ArrowClosed,
+              color: getTrackColor(track.lane.kind),
+              width: 16,
+              height: 16,
+            },
+            selectable: false,
+            focusable: false,
+          });
+        }
+      }
     }
   }
 
   return { nodes, edges };
 }
 
-function LaneLabelNode({ data }: NodeProps<FlowNode>) {
-  if (data.variant !== "lane-label") return null;
+function MessageHeaderNode({ data }: NodeProps<FlowNode>) {
+  if (data.variant !== "message-header") return null;
+  const { column } = data;
+  const isPrePrompt = column.id === PRE_PROMPT_COLUMN_ID;
+  const totalEvents = column.tracks.reduce((sum, track) => sum + track.events.length, 0);
+  const trackCount = column.tracks.length;
 
-  const Icon = getLaneIcon(data.lane);
   return (
     <div
       className={cn(
-        "w-[220px] rounded-2xl border bg-background/95 px-4 py-3 shadow-sm backdrop-blur",
-        data.lane.kind === "main" ? "border-primary/35" : "border-border",
+        "rounded-2xl border bg-background/95 px-4 py-3 shadow-md backdrop-blur transition-[border-color,box-shadow]",
+        isPrePrompt ? "border-muted-foreground/30" : "border-primary/35",
+        data.focused && "border-primary ring-2 ring-primary/40",
       )}
+      style={{ width: data.width }}
     >
-      <Handle
-        type="source"
-        position={Position.Right}
-        className="!h-3 !w-3 !border-0 !bg-transparent !opacity-0"
-      />
-      <div className="flex items-start gap-3">
-        <div className="rounded-full border bg-muted p-2 text-muted-foreground shadow-sm">
-          <Icon className="h-4 w-4" />
+      <div className="flex items-center gap-2">
+        <div
+          className={cn(
+            "rounded-full border bg-muted p-1.5",
+            isPrePrompt ? "text-muted-foreground" : "text-primary",
+          )}
+        >
+          <MessageSquareText className="h-3.5 w-3.5" />
         </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="truncate text-sm font-semibold text-foreground">{data.lane.label}</p>
-            <Badge variant={data.lane.kind === "main" ? "secondary" : "outline"} className="text-[10px]">
-              {data.lane.kind}
-            </Badge>
-          </div>
-          <p className="mt-1 text-[11px] text-muted-foreground">
-            {data.visibleCount} visible node{data.visibleCount === 1 ? "" : "s"} · {data.lane.event_count} events
-          </p>
-          <div className="mt-2 flex flex-wrap gap-1">
-            {data.lane.failure_count > 0 && (
-              <Badge variant="destructive" className="text-[10px]">
-                {data.lane.failure_count} failure{data.lane.failure_count === 1 ? "" : "s"}
-              </Badge>
-            )}
-            {data.lane.inspection_event_count > 0 && (
-              <Badge variant="outline" className="text-[10px]">
-                {data.lane.inspection_event_count} inspection
-              </Badge>
-            )}
-            <Badge variant="secondary" className="text-[10px]">
-              {formatDurationCompact(Math.round(data.lane.duration_ms / 1000))}
-            </Badge>
-          </div>
-        </div>
+        <Badge variant={isPrePrompt ? "outline" : "secondary"} className="text-[10px]">
+          {column.label}
+        </Badge>
+        <span className="text-[11px] text-muted-foreground">{formatTime(column.startTimestamp)}</span>
+        <span className="ml-auto text-[11px] text-muted-foreground">
+          {formatDurationCompact(Math.max(0, Math.round((column.endMs - column.startMs) / 1000)))}
+        </span>
+      </div>
+      <p className="mt-2 line-clamp-2 text-xs text-foreground/90">{column.promptText || "—"}</p>
+      <div className="mt-2 flex flex-wrap gap-1">
+        <Badge variant="outline" className="text-[10px]">
+          {totalEvents} event{totalEvents === 1 ? "" : "s"}
+        </Badge>
+        <Badge variant="outline" className="text-[10px]">
+          {trackCount} track{trackCount === 1 ? "" : "s"}
+        </Badge>
       </div>
     </div>
   );
@@ -476,27 +635,38 @@ function EventNode({ data, selected }: NodeProps<FlowNode>) {
 
   const { lane, node, contextOnly, severity } = data;
   const Icon = getNodeIcon(node);
+  const LaneIcon = getLaneIcon(lane.kind);
 
   return (
     <div
       className={cn(
-        "rounded-2xl border px-4 py-3 shadow-lg backdrop-blur transition-all",
+        "relative rounded-2xl border px-4 py-3 shadow-lg backdrop-blur transition-all",
+        "before:absolute before:left-0 before:top-3 before:bottom-3 before:w-1 before:rounded-full",
         getCategoryClasses(node.category),
+        getLaneAccent(lane.kind),
         selected && "ring-2 ring-primary ring-offset-2",
         contextOnly && "opacity-70 saturate-75",
       )}
     >
       <Handle
+        id="top"
         type="target"
-        position={Position.Left}
-        className="!h-3 !w-3 !border-0 !bg-transparent !opacity-0"
+        position={Position.Top}
+        className="!h-2 !w-2 !border-0 !bg-transparent !opacity-0"
       />
       <Handle
+        id="bottom"
+        type="source"
+        position={Position.Bottom}
+        className="!h-2 !w-2 !border-0 !bg-transparent !opacity-0"
+      />
+      <Handle
+        id="fork-out"
         type="source"
         position={Position.Right}
-        className="!h-3 !w-3 !border-0 !bg-transparent !opacity-0"
+        className="!h-2 !w-2 !border-0 !bg-transparent !opacity-0"
       />
-      <div className="flex items-start gap-3">
+      <div className="flex items-start gap-3 pl-2">
         <div className="mt-0.5 rounded-full border bg-background/80 p-2 shadow-sm">
           <Icon className="h-4 w-4" />
         </div>
@@ -514,7 +684,10 @@ function EventNode({ data, selected }: NodeProps<FlowNode>) {
           </div>
           {node.subtitle && <p className="mt-1 line-clamp-2 text-xs opacity-80">{node.subtitle}</p>}
           <div className="mt-3 flex flex-wrap items-center gap-1 text-[11px] opacity-80">
-            <span>{lane.label}</span>
+            <span className="inline-flex items-center gap-1">
+              <LaneIcon className="h-3 w-3" />
+              {lane.label}
+            </span>
             <span>•</span>
             <span>{formatTime(node.start_timestamp)}</span>
             <span>•</span>
@@ -542,8 +715,8 @@ function EventNode({ data, selected }: NodeProps<FlowNode>) {
 }
 
 const nodeTypes = {
-  laneLabel: LaneLabelNode,
   event: EventNode,
+  messageHeader: MessageHeaderNode,
 } satisfies NodeTypes;
 
 export function RunTraceFlow({
@@ -552,15 +725,24 @@ export function RunTraceFlow({
   onSelectNode,
   onVisibleNodeIdsChange,
   filters,
+  focusedPromptSliceId,
 }: RunTraceFlowProps) {
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance<FlowNode, Edge> | null>(null);
   const { visibleLanes, matchedNodeCount, visibleNodeIds } = useMemo(
     () => buildVisibleLanes(model, filters),
     [filters, model],
   );
+
+  const columns = useMemo(
+    () => buildMessageColumns(model, visibleLanes),
+    [model, visibleLanes],
+  );
+
+  const layouts = useMemo(() => layoutColumns(columns), [columns]);
+
   const { nodes, edges } = useMemo(
-    () => buildFlowElements(model, visibleLanes, selectedNodeId),
-    [model, selectedNodeId, visibleLanes],
+    () => buildFlowElements(layouts, selectedNodeId, focusedPromptSliceId),
+    [layouts, selectedNodeId, focusedPromptSliceId],
   );
 
   useEffect(() => {
@@ -570,7 +752,23 @@ export function RunTraceFlow({
   useEffect(() => {
     if (!reactFlowInstance || nodes.length === 0) return;
 
+    const focusLayout = focusedPromptSliceId
+      ? layouts.find((entry) => entry.column.id === focusedPromptSliceId)
+      : undefined;
+
     const frame = window.requestAnimationFrame(() => {
+      if (focusLayout) {
+        reactFlowInstance.fitBounds(
+          {
+            x: focusLayout.x,
+            y: 0,
+            width: focusLayout.width,
+            height: focusLayout.height,
+          },
+          { padding: 0.18, duration: 320 },
+        );
+        return;
+      }
       reactFlowInstance.fitView({
         padding: 0.16,
         duration: 280,
@@ -580,7 +778,7 @@ export function RunTraceFlow({
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [edges.length, nodes.length, reactFlowInstance, model.session_id, model.selected_prompt_slice_id, filters]);
+  }, [edges.length, nodes.length, reactFlowInstance, model.session_id, focusedPromptSliceId, filters, layouts]);
 
   if (matchedNodeCount === 0 || nodes.length === 0) {
     return (
@@ -601,7 +799,7 @@ export function RunTraceFlow({
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
-        nodeOrigin={[0, 0.5]}
+        nodeOrigin={[0, 0]}
         nodesDraggable={false}
         nodesConnectable={false}
         elementsSelectable

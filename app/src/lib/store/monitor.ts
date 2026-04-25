@@ -16,6 +16,7 @@ interface MonitorStore {
   autoRefresh: boolean;
   refreshInterval: ReturnType<typeof setInterval> | null;
   focusedSessionIds: string[];
+  activeSessionId: string | null;
   showDismissedMonitorItems: boolean;
   dismissedAlertKeys: Record<string, true>;
   dismissedAnomalyKeys: Record<string, true>;
@@ -26,6 +27,7 @@ interface MonitorStore {
   toggleFocusedSession: (sessionId: string) => void;
   focusSingleSession: (sessionId: string) => void;
   clearFocusedSessions: () => void;
+  setActiveSessionId: (sessionId: string | null) => void;
   toggleShowDismissedMonitorItems: () => void;
   dismissAlert: (key: string) => void;
   dismissAlerts: (keys: string[]) => void;
@@ -203,6 +205,7 @@ export const useMonitorStore = create<MonitorStore>()(
       autoRefresh: false,
       refreshInterval: null,
       focusedSessionIds: [],
+      activeSessionId: null,
       showDismissedMonitorItems: false,
       dismissedAlertKeys: {},
       dismissedAnomalyKeys: {},
@@ -252,6 +255,7 @@ export const useMonitorStore = create<MonitorStore>()(
 
       focusSingleSession: (sessionId) => set({ focusedSessionIds: [sessionId] }),
       clearFocusedSessions: () => set({ focusedSessionIds: [] }),
+      setActiveSessionId: (sessionId) => set({ activeSessionId: sessionId }),
       toggleShowDismissedMonitorItems: () =>
         set((state) => ({
           showDismissedMonitorItems: !state.showDismissedMonitorItems,
@@ -322,6 +326,7 @@ export const useMonitorStore = create<MonitorStore>()(
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
         focusedSessionIds: state.focusedSessionIds,
+        activeSessionId: state.activeSessionId,
         showDismissedMonitorItems: state.showDismissedMonitorItems,
         dismissedAlertKeys: state.dismissedAlertKeys,
         dismissedAnomalyKeys: state.dismissedAnomalyKeys,

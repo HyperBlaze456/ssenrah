@@ -2,6 +2,8 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import type { PanelId, ConfigScope, ConflictInfo, Provider } from "@/types";
 
+export type AlertsConfigFocus = "cost" | "errors" | "duration" | null;
+
 interface UiStore {
   activePanel: PanelId;
   activeScope: ConfigScope;
@@ -9,6 +11,7 @@ interface UiStore {
   sidebarCollapsed: boolean;
   effectiveConfigExpanded: boolean;
   conflicts: ConflictInfo[];
+  alertsConfigFocus: AlertsConfigFocus;
 
   setPanel: (panel: PanelId) => void;
   setScope: (scope: ConfigScope) => void;
@@ -18,6 +21,8 @@ interface UiStore {
   toggleEffectiveConfig: () => void;
   addConflict: (conflict: ConflictInfo) => void;
   resolveConflict: (id: string, resolution: "keep_mine" | "reload") => void;
+  openAlertsConfig: (focus?: AlertsConfigFocus) => void;
+  clearAlertsConfigFocus: () => void;
 }
 
 export const useUiStore = create<UiStore>()(
@@ -29,8 +34,17 @@ export const useUiStore = create<UiStore>()(
       sidebarCollapsed: false,
       effectiveConfigExpanded: false,
       conflicts: [],
+      alertsConfigFocus: null,
 
-      setPanel: (panel) => set({ activePanel: panel }),
+      setPanel: (panel) =>
+        set((state) => ({
+          activePanel: panel,
+          // Drop the focus hint as soon as the user navigates away from Alerts.
+          alertsConfigFocus: panel === "alerts" ? state.alertsConfigFocus : null,
+        })),
+      openAlertsConfig: (focus = "cost") =>
+        set({ activePanel: "alerts", alertsConfigFocus: focus }),
+      clearAlertsConfigFocus: () => set({ alertsConfigFocus: null }),
       setScope: (scope) => set({ activeScope: scope }),
       setProvider: (provider) =>
         set((state) => {
