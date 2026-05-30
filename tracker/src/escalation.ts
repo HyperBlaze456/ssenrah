@@ -9,19 +9,12 @@ import {
   writeFileSync,
   existsSync,
   mkdirSync,
-  appendFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { EscalationRule, EscalationConfig, AgentEvent } from "./types.js";
+import { appendLogLine, readRecentEvents } from "./log-store.js";
 import { getAuthoritativeSessionCost } from "./telemetry.js";
-
-function getLogDir(): string {
-  return (
-    process.env.SSENRAH_LOG_DIR ??
-    join(process.env.HOME ?? "~", ".ssenrah", "events")
-  );
-}
 
 function getConfigDir(): string {
   return join(process.env.HOME ?? "~", ".ssenrah");
@@ -207,11 +200,6 @@ export function fireAlerts(
     }
 
     // Always log escalation events (both "console" and "log" actions)
-    const logFile = join(getLogDir(), "events.jsonl");
-    if (!existsSync(getLogDir())) {
-      mkdirSync(getLogDir(), { recursive: true });
-    }
-
     const escalationEvent: Partial<AgentEvent> = {
       id: randomUUID(),
       schema_version: 2,
@@ -224,36 +212,27 @@ export function fireAlerts(
       _raw: alert as unknown as Record<string, unknown>,
     };
 
-    appendFileSync(
-      logFile,
-      JSON.stringify(escalationEvent) + "\n",
-      "utf-8"
-    );
+    appendLogLine(JSON.stringify(escalationEvent) + "\n");
   }
 }
 
 /**
- * Load events from the JSONL log file.
+ * Load recent events from the JSONL log file.
+ *
+ * Only the tail of the log is read (see {@link readRecentEvents}) so this stays
+ * cheap regardless of how large the log has grown.
  */
 export function loadEventsFromLog(): AgentEvent[] {
-  const logFile = join(getLogDir(), "events.jsonl");
-  if (!existsSync(logFile)) return [];
-
-  const lines = readFileSync(logFile, "utf-8").split("\n").filter(Boolean);
-  const events: AgentEvent[] = [];
-  for (const line of lines) {
-    try {
-      events.push(JSON.parse(line) as AgentEvent);
-    } catch {
-      // Skip malformed lines
-    }
-  }
-  return events;
+  return readRecentEvents();
 }
 
 /**
- * Run the full escalation check for a session.
- * Called by the hook after appending an event.
+ * Run the escalation check for a session.
+ * Called by the hook at terminal events after appending.
+ *
+ * Each rule fires at most once per session: any rule already represented by an
+ * `_escalation` event in the recent log is skipped, so a session that stays
+ * over a threshold no longer appends a fresh alert on every invocation.
  */
 export function checkEscalation(sessionId: string): void {
   const config = loadEscalationConfig();
@@ -262,8 +241,18 @@ export function checkEscalation(sessionId: string): void {
   const events = loadEventsFromLog();
   const state = computeSessionState(events, sessionId);
   const alerts = evaluateRules(config.rules, state);
+  if (alerts.length === 0) return;
 
-  if (alerts.length > 0) {
-    fireAlerts(alerts, config.rules);
+  const alreadyFired = new Set<string>();
+  for (const event of events) {
+    if (event.hook_event_type === "_escalation" && event.session_id === sessionId) {
+      const ruleName = (event._raw as { rule_name?: string } | undefined)?.rule_name;
+      if (ruleName) alreadyFired.add(ruleName);
+    }
+  }
+
+  const freshAlerts = alerts.filter((alert) => !alreadyFired.has(alert.rule_name));
+  if (freshAlerts.length > 0) {
+    fireAlerts(freshAlerts, config.rules);
   }
 }

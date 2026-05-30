@@ -10,10 +10,9 @@
  * - Cascading errors in a short window
  * - Session cost exceeding growth rate thresholds
  */
-import { readFileSync, existsSync, mkdirSync, appendFileSync } from "node:fs";
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AgentEvent } from "./types.js";
+import { appendLogLine, readRecentEvents } from "./log-store.js";
 import { getAuthoritativeSessionCost } from "./telemetry.js";
 
 export type AnomalyType =
@@ -307,49 +306,20 @@ export function detectAnomalies(
   return all;
 }
 
-function getLogDir(): string {
-  return (
-    process.env.SSENRAH_LOG_DIR ??
-    join(process.env.HOME ?? "~", ".ssenrah", "events")
-  );
-}
-
-/**
- * Load events from the JSONL log file.
- */
-function loadEventsFromLog(): AgentEvent[] {
-  const logFile = join(getLogDir(), "events.jsonl");
-  if (!existsSync(logFile)) return [];
-
-  const lines = readFileSync(logFile, "utf-8").split("\n").filter(Boolean);
-  const events: AgentEvent[] = [];
-  for (const line of lines) {
-    try {
-      events.push(JSON.parse(line) as AgentEvent);
-    } catch {
-      // Skip malformed lines
-    }
-  }
-  return events;
-}
-
 /**
  * Run anomaly detection for a session and log any findings.
- * Called by the hook after appending an event.
+ * Called by the hook at terminal events after appending.
+ *
+ * Reads only the recent tail of the log and dedupes by (session, anomaly type),
+ * so a persistent condition is recorded once rather than on every invocation.
  */
 export function checkAnomalies(sessionId: string): void {
-  const events = loadEventsFromLog();
+  const events = readRecentEvents();
   const sessionEvents = events.filter((e) => e.session_id === sessionId);
   if (sessionEvents.length < 3) return; // Not enough data
 
   const anomalies = detectAnomalies(sessionEvents);
   if (anomalies.length === 0) return;
-
-  const logDir = getLogDir();
-  const logFile = join(logDir, "events.jsonl");
-  if (!existsSync(logDir)) {
-    mkdirSync(logDir, { recursive: true });
-  }
 
   for (const anomaly of anomalies) {
     // Check if we already logged this type for this session (avoid duplicates)
@@ -373,7 +343,7 @@ export function checkAnomalies(sessionId: string): void {
       _raw: anomaly as unknown as Record<string, unknown>,
     };
 
-    appendFileSync(logFile, JSON.stringify(anomalyEvent) + "\n", "utf-8");
+    appendLogLine(JSON.stringify(anomalyEvent) + "\n");
   }
 }
 

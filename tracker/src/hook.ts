@@ -13,11 +13,10 @@
  *   }
  */
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
 import { checkAnomalies } from "./anomaly.js";
 import { calculateSessionCost } from "./cost.js";
 import { checkEscalation } from "./escalation.js";
+import { appendLogLine } from "./log-store.js";
 import { redactPayload } from "./redact.js";
 import type {
   AgentEvent,
@@ -29,9 +28,16 @@ import type {
 } from "./types.js";
 
 const SCHEMA_VERSION = 3;
-const LOG_DIR =
-  process.env.SSENRAH_LOG_DIR ?? join(process.env.HOME ?? "~", ".ssenrah", "events");
-const LOG_FILE = join(LOG_DIR, "events.jsonl");
+
+// Escalation and anomaly detection scan the recent log, so we only run them at
+// natural session/agent boundaries — never on every PreToolUse/PostToolUse,
+// which would re-scan the log dozens of times per tool call.
+const TERMINAL_HOOK_EVENTS = new Set<string>([
+  "Stop",
+  "StopFailure",
+  "SessionEnd",
+  "SubagentStop",
+]);
 
 const NORMALIZED_KEYS = new Set([
   "session_id",
@@ -440,11 +446,8 @@ function stripUndefined(obj: Record<string, unknown>): Record<string, unknown> {
 }
 
 function appendEvent(event: AgentEvent): void {
-  if (!existsSync(LOG_DIR)) {
-    mkdirSync(LOG_DIR, { recursive: true });
-  }
   const line = JSON.stringify(stripUndefined(event as unknown as Record<string, unknown>)) + "\n";
-  appendFileSync(LOG_FILE, line, "utf-8");
+  appendLogLine(line);
 }
 
 async function main(): Promise<void> {
@@ -489,16 +492,20 @@ async function main(): Promise<void> {
 
   appendEvent(event);
 
-  try {
-    checkEscalation(event.session_id);
-  } catch {
-    // Never let escalation failures crash the hook
-  }
+  // Only the relatively rare terminal events trigger a log scan; the hot path
+  // (tool use) just appends a line and exits.
+  if (TERMINAL_HOOK_EVENTS.has(event.hook_event_type)) {
+    try {
+      checkEscalation(event.session_id);
+    } catch {
+      // Never let escalation failures crash the hook
+    }
 
-  try {
-    checkAnomalies(event.session_id);
-  } catch {
-    // Never let anomaly detection crash the hook
+    try {
+      checkAnomalies(event.session_id);
+    } catch {
+      // Never let anomaly detection crash the hook
+    }
   }
 }
 

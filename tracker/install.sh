@@ -5,7 +5,7 @@
 set -euo pipefail
 
 TRACKER_DIR="$(cd "$(dirname "$0")" && pwd)"
-HOOK_SCRIPT="$TRACKER_DIR/src/hook.ts"
+HOOK_DIST="$TRACKER_DIR/dist/hook.js"
 SETTINGS_FILE="$HOME/.claude/settings.json"
 
 echo "ssenrah tracker installer"
@@ -25,18 +25,22 @@ fi
 
 echo "[1/4] Prerequisites OK (node $(node -v))"
 
-# 2. Install npm dependencies
-echo "[2/4] Installing dependencies..."
+# 2. Install npm dependencies and compile to dist/
+#    The hook runs the compiled JS via `node` — NOT `npx tsx` — so each of the
+#    many per-tool-call hook processes starts instantly instead of re-transpiling
+#    the TypeScript source (and its esbuild dependency) from scratch every time.
+echo "[2/4] Installing dependencies & building..."
 cd "$TRACKER_DIR"
 npm install --silent 2>/dev/null
+npm run build --silent 2>/dev/null
 echo "      Done."
 
-# 3. Verify hook script exists
-if [ ! -f "$HOOK_SCRIPT" ]; then
-  echo "ERROR: Hook script not found at $HOOK_SCRIPT"
+# 3. Verify the compiled hook exists
+if [ ! -f "$HOOK_DIST" ]; then
+  echo "ERROR: Build output not found at $HOOK_DIST (did 'npm run build' fail?)"
   exit 1
 fi
-echo "[3/4] Hook script found at $HOOK_SCRIPT"
+echo "[3/4] Hook built at $HOOK_DIST"
 
 # 4. Patch Claude Code settings
 echo "[4/4] Adding hooks to Claude Code settings..."
@@ -53,28 +57,31 @@ fi
 node -e "
 const fs = require('fs');
 const path = '$SETTINGS_FILE';
-const hookCmd = 'npx tsx $HOOK_SCRIPT';
+const hookCmd = 'node $HOOK_DIST';
 
 const settings = JSON.parse(fs.readFileSync(path, 'utf-8'));
 
 const hookEntry = (cmd) => [{ hooks: [{ type: 'command', command: cmd, async: true }] }];
 
-// Full event surface that the tracker can interpret as of April 2026.
+// Curated event set. Every registered event spawns a separate hook process when
+// it fires, so we deliberately omit the high-frequency duplicates that used to
+// multiply per tool call:
+//   - PreToolUse      -> PostToolUse already records the call (with its result)
+//   - PostToolBatch   -> redundant with the individual PostToolUse events
+//   - FileChanged/CwdChanged/UserPromptExpansion/InstructionsLoaded -> noisy and
+//     derivable from the events we do keep
+// What remains captures the full session/tool/agent lifecycle at roughly one
+// process per tool call instead of four or five.
 const events = [
   'SessionStart', 'SessionEnd',
-  'InstructionsLoaded',
-  'UserPromptSubmit', 'UserPromptExpansion',
-  'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PostToolBatch',
+  'UserPromptSubmit',
+  'PostToolUse', 'PostToolUseFailure',
   'PermissionRequest', 'PermissionDenied',
   'SubagentStart', 'SubagentStop',
   'TaskCreated', 'TaskCompleted',
   'Notification',
   'Stop', 'StopFailure',
-  'TeammateIdle',
-  'ConfigChange', 'CwdChanged', 'FileChanged',
-  'WorktreeCreate', 'WorktreeRemove',
-  'PreCompact', 'PostCompact',
-  'Elicitation', 'ElicitationResult'
+  'PreCompact', 'PostCompact'
 ];
 
 if (!settings.hooks) settings.hooks = {};
@@ -90,12 +97,14 @@ for (const event of events) {
     const filtered = existing
       .map((entry) => {
         if (!entry || !Array.isArray(entry.hooks)) return entry;
-        const hooks = entry.hooks.filter((h) => !h.command || !h.command.includes('ssenrah') && !h.command.includes('hook.ts'));
+        const isSsenrah = (cmd) => cmd && (cmd.includes('ssenrah') || cmd.includes('hook.ts') || cmd.includes('hook.js'));
+        const hooks = entry.hooks.filter((h) => !isSsenrah(h.command));
         return { ...entry, hooks };
       })
       .filter((entry) => Array.isArray(entry.hooks) && entry.hooks.length > 0);
 
-    if (before !== filtered.length || existing.some((entry) => Array.isArray(entry.hooks) && entry.hooks.some((h) => h.command && (h.command.includes('ssenrah') || h.command.includes('hook.ts'))))) {
+    const wasSsenrah = (cmd) => cmd && (cmd.includes('ssenrah') || cmd.includes('hook.ts') || cmd.includes('hook.js'));
+    if (before !== filtered.length || existing.some((entry) => Array.isArray(entry.hooks) && entry.hooks.some((h) => wasSsenrah(h.command)))) {
       migrated++;
     }
 
