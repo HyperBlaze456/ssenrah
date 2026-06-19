@@ -301,6 +301,94 @@ describe("calculateSessionCost", () => {
     expect(cost!.cache_creation_input_tokens).toBe(600);
     expect(cost!.cache_read_input_tokens).toBe(9000);
     expect(cost!.output_tokens).toBe(180);
+    // Flat cache_creation is treated as the 5m tier (no regression).
+    expect(cost!.cost_kind).toBe("recomputed");
+  });
+
+  it("splits cache_creation into 5m / 1h tiers and prices the 1h tier higher", () => {
+    const transcriptPath = join(testDir, "transcript.jsonl");
+    writeFileSync(
+      transcriptPath,
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          model: "claude-sonnet-4-6",
+          usage: {
+            input_tokens: 100,
+            output_tokens: 200,
+            cache_read_input_tokens: 0,
+            cache_creation: {
+              ephemeral_5m_input_tokens: 1000,
+              ephemeral_1h_input_tokens: 2000,
+            },
+          },
+        },
+      }) + "\n"
+    );
+
+    const cost = calculateSessionCost(transcriptPath);
+    expect(cost).not.toBeNull();
+    expect(cost!.cache_creation_5m_input_tokens).toBe(1000);
+    expect(cost!.cache_creation_1h_input_tokens).toBe(2000);
+    expect(cost!.cache_creation_input_tokens).toBe(3000);
+    // input 0.0003 + output 0.003 + 5m (1000/1M*3.75=0.00375) + 1h (2000/1M*6=0.012)
+    expect(cost!.cost_usd).toBeCloseTo(0.0191, 4);
+  });
+
+  it("captures reported cost, ttft, duration, service tier, web search, and main/sidechain split", () => {
+    const transcriptPath = join(testDir, "transcript.jsonl");
+    const lines = [
+      JSON.stringify({
+        type: "assistant",
+        isSidechain: false,
+        costUSD: 0.05,
+        durationMs: 1200,
+        ttftMs: 800,
+        requestId: "req_main",
+        message: {
+          model: "claude-sonnet-4-6",
+          usage: {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            service_tier: "standard",
+            server_tool_use: { web_search_requests: 2 },
+          },
+        },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        isSidechain: true,
+        costUSD: 0.02,
+        durationMs: 600,
+        ttftMs: 300,
+        message: {
+          model: "claude-sonnet-4-6",
+          usage: { input_tokens: 200, output_tokens: 100 },
+        },
+      }),
+    ];
+    writeFileSync(transcriptPath, lines.join("\n") + "\n");
+
+    const cost = calculateSessionCost(transcriptPath);
+    expect(cost).not.toBeNull();
+    expect(cost!.reported_cost_usd).toBeCloseTo(0.07, 4);
+    expect(cost!.ttft_ms).toBe(800); // first main-lane turn
+    expect(cost!.duration_ms).toBe(1800);
+    expect(cost!.service_tier).toBe("standard");
+    expect(cost!.web_search_requests).toBe(2);
+    expect(cost!.main_total_tokens).toBe(150);
+    expect(cost!.sidechain_total_tokens).toBe(300);
+    expect(cost!.cost_kind).toBe("recomputed");
+  });
+
+  it("surfaces Codex reasoning_output_tokens", () => {
+    const transcriptPath = join(testDir, "codex-rollout.jsonl");
+    writeCodexRollout(transcriptPath, { reasoningOutputTokens: 150 });
+    const cost = calculateSessionCost(transcriptPath);
+    expect(cost).not.toBeNull();
+    expect(cost!.reasoning_output_tokens).toBe(150);
   });
 });
 

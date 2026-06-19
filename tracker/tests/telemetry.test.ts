@@ -269,4 +269,64 @@ describe("telemetry", () => {
     expect(trace?.lanes.some((lane) => lane.branch_kind === "team")).toBe(true);
     expect(trace?.first_event).toBe("2026-04-01T00:00:04.000Z");
   });
+
+  it("marks a TaskSummary as failed from completion_status", () => {
+    const tasks = summarizeTasks([
+      makeEvent({
+        timestamp: "2026-04-01T00:00:00.000Z",
+        hook_event_type: "TaskCreated",
+        task_id: "task-x",
+        task_subject: "Risky task",
+      }),
+      makeEvent({
+        timestamp: "2026-04-01T00:00:05.000Z",
+        hook_event_type: "TaskCompleted",
+        task_id: "task-x",
+        completion_status: "failed",
+        outcome: "failed",
+      }),
+    ]);
+    const task = tasks.find((candidate) => candidate.task_id === "task-x")!;
+    expect(task.status).toBe("failed");
+  });
+
+  it("surfaces session tokens, cost_kind and lane cost from terminal token_usage", () => {
+    const events = [
+      makeEvent({
+        timestamp: "2026-04-01T00:00:00.000Z",
+        hook_event_type: "SessionStart",
+        model: "claude-sonnet-4-6",
+      }),
+      makeEvent({
+        timestamp: "2026-04-01T00:00:10.000Z",
+        hook_event_type: "Stop",
+        cost_usd: 0.42,
+        reported_cost_usd: 0.39,
+        cost_kind: "recomputed",
+        ttft_ms: 900,
+        token_usage: {
+          input_tokens: 1000,
+          output_tokens: 500,
+          cache_read_input_tokens: 200,
+          cache_creation_input_tokens: 100,
+          total_tokens: 1800,
+          main_total_tokens: 1800,
+          sidechain_total_tokens: 0,
+        },
+      }),
+    ];
+
+    const session = summarizeSessions(events)[0]!;
+    expect(session.cost_usd).toBeCloseTo(0.42, 4);
+    expect(session.reported_cost_usd).toBeCloseTo(0.39, 4);
+    expect(session.cost_kind).toBe("recomputed");
+    expect(session.total_tokens).toBe(1800);
+    expect(session.input_tokens).toBe(1000);
+    expect(session.ttft_ms).toBe(900);
+
+    const trace = deriveRunTrace(events, "session-1");
+    const mainLane = trace?.lanes.find((lane) => lane.id === "lane:main");
+    expect(mainLane?.cost_usd).toBeCloseTo(0.42, 4);
+    expect(mainLane?.total_tokens).toBe(1800);
+  });
 });

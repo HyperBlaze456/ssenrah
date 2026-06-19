@@ -6,7 +6,7 @@ import { homeDir, join } from "@tauri-apps/api/path";
 import type { AgentEvent, EventSummary, Provider, SessionSummary } from "@/types";
 import { detectProvider } from "@/types";
 import { useUiStore } from "@/lib/store/ui";
-import { getAuthoritativeSessionCost, getAuthoritativeTotalCost } from "@/lib/telemetry";
+import { getAuthoritativeSessionCostSummary, getAuthoritativeTotalCost } from "@/lib/telemetry";
 
 interface MonitorStore {
   events: AgentEvent[];
@@ -164,6 +164,8 @@ export function computeSessions(events: AgentEvent[]): SessionSummary[] {
       (new Date(last.timestamp).getTime() - new Date(first.timestamp).getTime()) /
       1000;
 
+    const cost = getAuthoritativeSessionCostSummary(grouped.events, session_id);
+    const usage = cost.token_usage;
     sessions.push({
       session_id,
       event_count: grouped.events.length,
@@ -180,7 +182,18 @@ export function computeSessions(events: AgentEvent[]): SessionSummary[] {
       subagents: grouped.events.filter(
         (event) => event.hook_event_type === "SubagentStart",
       ).length,
-      cost_usd: getAuthoritativeSessionCost(grouped.events),
+      cost_usd: cost.cost_usd,
+      cost_kind: cost.cost_kind,
+      reported_cost_usd: cost.reported_cost_usd,
+      ttft_ms: cost.ttft_ms,
+      total_tokens: usage?.total_tokens,
+      input_tokens: usage?.input_tokens,
+      output_tokens: usage?.output_tokens,
+      cache_read_input_tokens: usage?.cache_read_input_tokens,
+      cache_creation_input_tokens: usage?.cache_creation_input_tokens,
+      reasoning_output_tokens: usage?.reasoning_output_tokens,
+      web_search_requests: usage?.web_search_requests,
+      service_tier: usage?.service_tier,
       top_tools: [...grouped.tools.entries()]
         .sort((a, b) => b[1] - a[1])
         .slice(0, 5),

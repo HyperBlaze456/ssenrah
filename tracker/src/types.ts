@@ -77,6 +77,42 @@ export type RunOutcome = "active" | "completed" | "failed" | "cancelled" | "unkn
 export type EventOutcome = RunOutcome;
 
 /**
+ * What a `cost_usd` value represents, so aggregators never SUM cumulative snapshots.
+ * - `recomputed`: full session total recomputed from the transcript (our default; cumulative)
+ * - `reported`: summed from the CLI-injected per-message `costUSD`
+ * - `cumulative` / `delta`: reserved for OTel ingestion
+ */
+export type CostKind = "recomputed" | "reported" | "cumulative" | "delta";
+
+/**
+ * Per-session token breakdown carried on terminal events, enabling per-lane /
+ * per-agent cost attribution on the run trace. All counts are whole tokens.
+ */
+export interface TokenUsageBreakdown {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  /** Sum of the 5m + 1h cache-creation tiers. */
+  cache_creation_input_tokens: number;
+  cache_creation_5m_input_tokens?: number;
+  cache_creation_1h_input_tokens?: number;
+  /** Codex reasoning tokens (already inside OpenAI output_tokens; surfaced for visibility). */
+  reasoning_output_tokens?: number;
+  /** Server-side tool usage, e.g. web_search billed per request. */
+  web_search_requests?: number;
+  /** standard | priority | batch */
+  service_tier?: string;
+  total_tokens: number;
+  /** transcript entries with isSidechain !== true */
+  main_total_tokens?: number;
+  /** transcript entries with isSidechain === true (subagent lanes) */
+  sidechain_total_tokens?: number;
+}
+
+/** Bump whenever the normalized AgentEvent contract changes (new/renamed fields). */
+export const SCHEMA_VERSION = 4;
+
+/**
  * Structured event written to the JSONL log.
  * Accepts ALL fields that hooks provide — we never refuse data.
  */
@@ -101,6 +137,8 @@ export interface AgentEvent {
   tool_name?: string;
   tool_input?: Record<string, unknown>;
   tool_use_id?: string;
+  /** Canonical PostToolUse result key; cross-filled with `tool_response`. */
+  tool_output?: unknown;
   tool_response?: unknown;
   error?: string;
 
@@ -120,6 +158,10 @@ export interface AgentEvent {
   task_name?: string;
   task_description?: string;
   prompt_segment_id?: string;
+  /** TaskCompleted outcome: success | failed */
+  completion_status?: string;
+  /** Per-turn reasoning budget: low | medium | high | xhigh | max */
+  effort_level?: string;
 
   // Derived execution metadata
   duration_ms?: number;
@@ -136,6 +178,7 @@ export interface AgentEvent {
 
   // Teammate fields
   teammate_name?: string;
+  teammate_type?: string;
   team_name?: string;
 
   // Notification fields
@@ -150,6 +193,8 @@ export interface AgentEvent {
   command_name?: string;
   command_args?: string;
   command_source?: string;
+  /** Resulting prompt text after expansion (redacted). */
+  expanded_prompt?: string;
 
   // Session lifecycle
   source?: string;
@@ -158,6 +203,8 @@ export interface AgentEvent {
   exit_reason?: string;
   old_cwd?: string;
   new_cwd?: string;
+  /** Canonical CwdChanged previous directory; cross-filled with `old_cwd`. */
+  previous_cwd?: string;
   event?: string;
   worktree_path?: string;
   agent_transcript_path?: string;
@@ -207,8 +254,18 @@ export interface AgentEvent {
   isolation_mode?: string;
   subagent_id?: string;
 
-  // Cost (from Claude Code's built-in cost tracking, added by our adapter)
+  // Cost / tokens / latency (recomputed from the transcript at terminal events)
   cost_usd?: number;
+  /** Σ of CLI-injected per-message costUSD (authoritative per-turn cost), when present. */
+  reported_cost_usd?: number;
+  /** What `cost_usd` represents — never SUM `recomputed`/`cumulative` snapshots across events. */
+  cost_kind?: CostKind;
+  /** Session token breakdown carried on terminal events for per-lane attribution. */
+  token_usage?: TokenUsageBreakdown;
+  /** Time-to-first-token of the first main-lane assistant turn, in ms. */
+  ttft_ms?: number;
+  /** Join key to OTel api_request / transcript requestId, when present. */
+  request_id?: string;
 
   /** Forward-compatible bag for non-normalized hook keys */
   extras?: Record<string, unknown>;

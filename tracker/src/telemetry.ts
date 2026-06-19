@@ -1,8 +1,10 @@
 import type {
   AgentEvent,
   BranchKind,
+  CostKind,
   EffectLevel,
   RunOutcome,
+  TokenUsageBreakdown,
   ToolCategory,
 } from "./types.js";
 
@@ -53,6 +55,9 @@ export interface AgentSummary {
   last_timestamp: string;
   models_used: string[];
   transcript_paths: string[];
+  /** Best-effort cost/tokens attributed to this actor from its cost-bearing events. */
+  cost_usd?: number;
+  total_tokens?: number;
 }
 
 export interface TaskSummary {
@@ -65,7 +70,7 @@ export interface TaskSummary {
   created_at?: string;
   completed_at?: string;
   duration_seconds?: number;
-  status: "created" | "completed";
+  status: "created" | "completed" | "failed";
 }
 
 export interface SessionSummary {
@@ -78,6 +83,17 @@ export interface SessionSummary {
   errors: number;
   subagents: number;
   cost_usd: number;
+  cost_kind?: CostKind;
+  reported_cost_usd?: number;
+  total_tokens?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  reasoning_output_tokens?: number;
+  web_search_requests?: number;
+  service_tier?: string;
+  ttft_ms?: number;
   top_tools: [string, number][];
 }
 
@@ -97,6 +113,10 @@ export interface EventSummary {
 export interface SessionCostSummary {
   session_id: string;
   cost_usd: number;
+  cost_kind?: CostKind;
+  reported_cost_usd?: number;
+  ttft_ms?: number;
+  token_usage?: TokenUsageBreakdown;
   source_event_id?: string;
   source_timestamp?: string;
 }
@@ -154,6 +174,9 @@ export interface RunTraceLane {
   duration_ms: number;
   event_count: number;
   node_count: number;
+  /** Best-effort cost/tokens for this lane's actor, from its cost-bearing events. */
+  cost_usd?: number;
+  total_tokens?: number;
   nodes: RunTraceNode[];
 }
 
@@ -822,6 +845,24 @@ export function summarizeAgents(
     }
   }
 
+  // Best-effort cost/token attribution: cost is recomputed per session on the actor's
+  // terminal event (Stop/SessionEnd), so attribute it to that actor's lane. Finer
+  // per-subagent attribution needs agent_transcript_path parsing (deferred to L3).
+  const filteredEvents = options.session
+    ? events.filter((event) => event.session_id.startsWith(options.session!))
+    : events;
+  for (const event of filteredEvents) {
+    if (typeof event.cost_usd !== "number" && !event.token_usage) continue;
+    const summary = grouped.get(`${event.session_id}::${getActor(event).actor_id}`);
+    if (!summary) continue;
+    if (typeof event.cost_usd === "number") {
+      summary.cost_usd = Math.max(summary.cost_usd ?? 0, event.cost_usd);
+    }
+    if (event.token_usage) {
+      summary.total_tokens = Math.max(summary.total_tokens ?? 0, event.token_usage.total_tokens);
+    }
+  }
+
   return [...grouped.values()].sort((left, right) => right.last_timestamp.localeCompare(left.last_timestamp));
 }
 
@@ -833,6 +874,15 @@ export function summarizeTasks(
     ? events.filter((event) => event.session_id.startsWith(options.session!))
     : events;
   const tasks = new Map<string, TaskSummary>();
+
+  // A completed task is "failed" when its completion_status or derived outcome says so.
+  const completionStatus = (event: AgentEvent): "completed" | "failed" => {
+    const status = String(event.completion_status ?? "").toLowerCase();
+    if (status.includes("fail") || status.includes("error") || event.outcome === "failed") {
+      return "failed";
+    }
+    return "completed";
+  };
 
   for (const event of filtered) {
     if (!event.task_id && !event.task_subject) continue;
@@ -849,7 +899,7 @@ export function summarizeTasks(
         team_name: event.team_name,
         created_at: event.hook_event_type === "TaskCreated" ? event.timestamp : undefined,
         completed_at: event.hook_event_type === "TaskCompleted" ? event.timestamp : undefined,
-        status: event.hook_event_type === "TaskCompleted" ? "completed" : "created",
+        status: event.hook_event_type === "TaskCompleted" ? completionStatus(event) : "created",
       });
       continue;
     }
@@ -861,7 +911,7 @@ export function summarizeTasks(
     if (event.hook_event_type === "TaskCreated") existing.created_at = existing.created_at ?? event.timestamp;
     if (event.hook_event_type === "TaskCompleted") {
       existing.completed_at = event.timestamp;
-      existing.status = "completed";
+      existing.status = completionStatus(event);
     }
   }
 
@@ -897,6 +947,10 @@ export function getAuthoritativeSessionCostSummary(
   return {
     session_id: sessionId,
     cost_usd: latest.cost_usd ?? 0,
+    cost_kind: latest.cost_kind,
+    reported_cost_usd: latest.reported_cost_usd,
+    ttft_ms: latest.ttft_ms,
+    token_usage: latest.token_usage,
     source_event_id: latest.id,
     source_timestamp: latest.timestamp,
   };
@@ -932,6 +986,8 @@ export function summarizeSessions(events: AgentEvent[]): SessionSummary[] {
   for (const [sessionId, bucket] of grouped) {
     const first = bucket.events[0]!;
     const last = bucket.events[bucket.events.length - 1]!;
+    const cost = getAuthoritativeSessionCostSummary(events, sessionId);
+    const usage = cost.token_usage;
     sessions.push({
       session_id: sessionId,
       event_count: bucket.events.length,
@@ -946,7 +1002,18 @@ export function summarizeSessions(events: AgentEvent[]): SessionSummary[] {
         (event) => event.hook_event_type === "PostToolUseFailure" || event.hook_event_type === "StopFailure",
       ).length,
       subagents: bucket.events.filter((event) => event.hook_event_type === "SubagentStart").length,
-      cost_usd: getAuthoritativeSessionCost(events, sessionId),
+      cost_usd: cost.cost_usd,
+      cost_kind: cost.cost_kind,
+      reported_cost_usd: cost.reported_cost_usd,
+      ttft_ms: cost.ttft_ms,
+      total_tokens: usage?.total_tokens,
+      input_tokens: usage?.input_tokens,
+      output_tokens: usage?.output_tokens,
+      cache_read_input_tokens: usage?.cache_read_input_tokens,
+      cache_creation_input_tokens: usage?.cache_creation_input_tokens,
+      reasoning_output_tokens: usage?.reasoning_output_tokens,
+      web_search_requests: usage?.web_search_requests,
+      service_tier: usage?.service_tier,
       top_tools: [...bucket.tools.entries()].sort((left, right) => right[1] - left[1]).slice(0, 5),
     });
   }
@@ -1234,6 +1301,17 @@ function expandedBranchNode(actor: ActorContext, promptSlices: PromptSlice[]): R
   };
 }
 
+/** Best-effort cost/tokens for a lane, from its actor's cost-bearing events. */
+function laneCostTokens(events: AgentEvent[]): { cost_usd?: number; total_tokens?: number } {
+  let cost: number | undefined;
+  let tokens: number | undefined;
+  for (const event of events) {
+    if (typeof event.cost_usd === "number") cost = Math.max(cost ?? 0, event.cost_usd);
+    if (event.token_usage) tokens = Math.max(tokens ?? 0, event.token_usage.total_tokens);
+  }
+  return { cost_usd: cost, total_tokens: tokens };
+}
+
 export function deriveRunTrace(
   events: AgentEvent[],
   sessionOrOptions: string | { session?: string; promptSliceId?: string } = {},
@@ -1286,6 +1364,7 @@ export function deriveRunTrace(
         duration_ms: actor.duration_ms,
         event_count: actor.events.length,
         node_count: laneNodes.length,
+        ...laneCostTokens(actor.events),
         nodes: laneNodes,
       });
     } else {
@@ -1305,6 +1384,7 @@ export function deriveRunTrace(
         duration_ms: actor.duration_ms,
         event_count: actor.events.length,
         node_count: 0,
+        ...laneCostTokens(actor.events),
         nodes: [],
       });
     }
@@ -1327,6 +1407,7 @@ export function deriveRunTrace(
     ),
     event_count: mainActor.events.length,
     node_count: sortedMainNodes.length,
+    ...laneCostTokens(mainActor.events),
     nodes: sortedMainNodes,
   });
 

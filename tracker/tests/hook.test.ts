@@ -155,7 +155,7 @@ describe("hook handler", () => {
 
     const events = readEvents();
     const event = events[0]!;
-    expect(event.schema_version).toBe(3);
+    expect(event.schema_version).toBe(4);
     expect(event.transcript_path).toBe("/tmp/main-transcript.jsonl");
     expect(event.agent_transcript_path).toBe("/tmp/subagent-transcript.jsonl");
     expect(event.worktree_path).toBe("/repo/.worktrees/research");
@@ -385,5 +385,75 @@ describe("hook handler", () => {
     // task_name is the new key — it should also populate the legacy task_subject alias.
     expect(task.task_name).toBe("Implement feature");
     expect(task.task_subject).toBe("Implement feature");
+  }, 60000);
+
+  it("cross-fills tool_output / tool_response and captures effort_level", () => {
+    runHookWithStdin(
+      JSON.stringify({
+        session_id: "session-l0",
+        transcript_path: "/tmp/l0.jsonl",
+        cwd: "/repo",
+        hook_event_name: "PostToolUse",
+        tool_name: "Bash",
+        tool_output: "build ok",
+        effort: { level: "xhigh" },
+      }),
+    );
+
+    const event = readEvents()[0]!;
+    // tool_output is canonical; the legacy tool_response alias is cross-filled.
+    expect(event.tool_output).toBe("build ok");
+    expect(event.tool_response).toBe("build ok");
+    // effort.level is nested on the payload and lifted to a flat effort_level.
+    expect(event.effort_level).toBe("xhigh");
+  }, 60000);
+
+  it("cross-fills CwdChanged previous_cwd and captures UserPromptExpansion expanded_prompt", () => {
+    runHookWithStdin(
+      JSON.stringify({
+        session_id: "session-l0b",
+        transcript_path: "/tmp/l0b.jsonl",
+        cwd: "/repo/sub",
+        hook_event_name: "CwdChanged",
+        previous_cwd: "/repo",
+      }),
+    );
+    runHookWithStdin(
+      JSON.stringify({
+        session_id: "session-l0b",
+        transcript_path: "/tmp/l0b.jsonl",
+        cwd: "/repo/sub",
+        hook_event_name: "UserPromptExpansion",
+        expansion_type: "slash_command",
+        command_name: "deploy",
+        expanded_prompt: "Run the deploy playbook",
+      }),
+    );
+
+    const events = readEvents();
+    const cwd = events.find((event) => event.hook_event_type === "CwdChanged")!;
+    const expansion = events.find((event) => event.hook_event_type === "UserPromptExpansion")!;
+    expect(cwd.previous_cwd).toBe("/repo");
+    expect(cwd.old_cwd).toBe("/repo"); // legacy alias cross-filled
+    expect(cwd.new_cwd).toBe("/repo/sub"); // falls back to cwd
+    expect(expansion.expanded_prompt).toBe("Run the deploy playbook");
+  }, 60000);
+
+  it("marks a failed TaskCompleted outcome from completion_status", () => {
+    runHookWithStdin(
+      JSON.stringify({
+        session_id: "session-l1",
+        transcript_path: "/tmp/l1.jsonl",
+        cwd: "/repo",
+        hook_event_name: "TaskCompleted",
+        task_id: "t_fail",
+        task_name: "Broken task",
+        completion_status: "failed",
+      }),
+    );
+
+    const event = readEvents()[0]!;
+    expect(event.completion_status).toBe("failed");
+    expect(event.outcome).toBe("failed");
   }, 60000);
 });

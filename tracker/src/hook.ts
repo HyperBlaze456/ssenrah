@@ -18,16 +18,15 @@ import { calculateSessionCost } from "./cost.js";
 import { checkEscalation } from "./escalation.js";
 import { appendLogLine } from "./log-store.js";
 import { redactPayload } from "./redact.js";
-import type {
-  AgentEvent,
-  BranchKind,
-  EffectLevel,
-  HookEventType,
-  RunOutcome,
-  ToolCategory,
+import {
+  SCHEMA_VERSION,
+  type AgentEvent,
+  type BranchKind,
+  type EffectLevel,
+  type HookEventType,
+  type RunOutcome,
+  type ToolCategory,
 } from "./types.js";
-
-const SCHEMA_VERSION = 3;
 
 // Escalation and anomaly detection scan the recent log, so we only run them at
 // natural session/agent boundaries — never on every PreToolUse/PostToolUse,
@@ -48,6 +47,7 @@ const NORMALIZED_KEYS = new Set([
   "tool_name",
   "tool_input",
   "tool_use_id",
+  "tool_output",
   "tool_response",
   "error",
   "agent_id",
@@ -63,6 +63,9 @@ const NORMALIZED_KEYS = new Set([
   "task_name",
   "task_description",
   "prompt_segment_id",
+  "completion_status",
+  "effort_level",
+  "effort",
   "duration_ms",
   "outcome",
   "failure_class",
@@ -85,6 +88,7 @@ const NORMALIZED_KEYS = new Set([
   "command_name",
   "command_args",
   "command_source",
+  "expanded_prompt",
   "source",
   "reason",
   "stop_reason",
@@ -113,6 +117,7 @@ const NORMALIZED_KEYS = new Set([
   "parent_file_path",
   "old_cwd",
   "new_cwd",
+  "previous_cwd",
   "event",
   "worktree_path",
   "isolation_mode",
@@ -125,6 +130,11 @@ const NORMALIZED_KEYS = new Set([
   "content",
   "elicitation_id",
   "cost_usd",
+  "reported_cost_usd",
+  "cost_kind",
+  "token_usage",
+  "ttft_ms",
+  "request_id",
 ]);
 
 const INSPECTION_TOOL_NAMES = new Set([
@@ -277,7 +287,13 @@ function deriveOutcome(payload: Record<string, unknown>): RunOutcome | undefined
     if (reasonText.includes("fail") || reasonText.includes("error")) return "failed";
     return "completed";
   }
-  if (hookEventType === "SessionEnd" || hookEventType === "TaskCompleted") return "completed";
+  if (hookEventType === "TaskCompleted") {
+    const status = String(payload.completion_status ?? "").toLowerCase();
+    if (status.includes("fail") || status.includes("error")) return "failed";
+    if (status.includes("cancel")) return "cancelled";
+    return "completed";
+  }
+  if (hookEventType === "SessionEnd") return "completed";
   if (hookEventType === "Stop") {
     const reasonText = String(payload.stop_reason ?? payload.reason ?? "").toLowerCase();
     if (reasonText.includes("cancel")) return "cancelled";
@@ -295,9 +311,28 @@ function toAgentEvent(payload: Record<string, unknown>): AgentEvent {
   const effectLevel =
     (payload.effect_level as EffectLevel | undefined) ?? deriveEffectLevel(payload, toolCategory);
   const branchKind = deriveBranchKind(payload);
+  // error_type (e.g. StopFailure's rate_limit / server_error) becomes a visible failure class.
   const failureClass =
     (payload.failure_class as string | undefined) ??
+    (payload.error_type as string | undefined) ??
     (String(payload.hook_event_name ?? "").includes("Failure") ? String(payload.hook_event_name) : undefined);
+
+  // tool_output is the canonical PostToolUse result key; tool_response is the legacy alias.
+  const toolOutput = (payload.tool_output as unknown) ?? (payload.tool_response as unknown);
+  const toolResponse = (payload.tool_response as unknown) ?? (payload.tool_output as unknown);
+
+  // previous_cwd is the canonical CwdChanged key; old_cwd is the legacy alias.
+  const previousCwd = (payload.previous_cwd as string | undefined) ?? (payload.old_cwd as string | undefined);
+  const oldCwd = (payload.old_cwd as string | undefined) ?? (payload.previous_cwd as string | undefined);
+  const newCwd =
+    (payload.new_cwd as string | undefined) ??
+    (payload.hook_event_name === "CwdChanged" ? (payload.cwd as string | undefined) : undefined);
+
+  // effort.level is nested on tool-use/Stop contexts; accept a flat effort_level too.
+  const effort = payload.effort as { level?: string } | undefined;
+  const effortLevel =
+    (payload.effort_level as string | undefined) ??
+    (effort && typeof effort === "object" ? effort.level : undefined);
 
   // task_name is the new field; task_subject is the legacy alias — accept either.
   const taskSubject = (payload.task_subject as string | undefined) ?? (payload.task_name as string | undefined);
@@ -326,7 +361,8 @@ function toAgentEvent(payload: Record<string, unknown>): AgentEvent {
     tool_name: payload.tool_name as string | undefined,
     tool_input: payload.tool_input as Record<string, unknown> | undefined,
     tool_use_id: payload.tool_use_id as string | undefined,
-    tool_response: payload.tool_response as unknown,
+    tool_output: toolOutput,
+    tool_response: toolResponse,
     error: payload.error as string | undefined,
 
     // Agent fields
@@ -345,6 +381,8 @@ function toAgentEvent(payload: Record<string, unknown>): AgentEvent {
     task_name: taskName,
     task_description: payload.task_description as string | undefined,
     prompt_segment_id: payload.prompt_segment_id as string | undefined,
+    completion_status: payload.completion_status as string | undefined,
+    effort_level: effortLevel,
 
     // Derived execution metadata
     duration_ms: payload.duration_ms as number | undefined,
@@ -363,6 +401,7 @@ function toAgentEvent(payload: Record<string, unknown>): AgentEvent {
 
     // Teammate fields
     teammate_name: payload.teammate_name as string | undefined,
+    teammate_type: payload.teammate_type as string | undefined,
     team_name: payload.team_name as string | undefined,
 
     // Notification
@@ -377,14 +416,16 @@ function toAgentEvent(payload: Record<string, unknown>): AgentEvent {
     command_name: payload.command_name as string | undefined,
     command_args: payload.command_args as string | undefined,
     command_source: payload.command_source as string | undefined,
+    expanded_prompt: payload.expanded_prompt as string | undefined,
 
     // Session lifecycle
     source: payload.source as string | undefined,
     reason: payload.reason as string | undefined,
     stop_reason: payload.stop_reason as string | undefined,
     exit_reason: payload.exit_reason as string | undefined,
-    old_cwd: payload.old_cwd as string | undefined,
-    new_cwd: payload.new_cwd as string | undefined,
+    old_cwd: oldCwd,
+    new_cwd: newCwd,
+    previous_cwd: previousCwd,
     event: payload.event as string | undefined,
     worktree_path: payload.worktree_path as string | undefined,
     isolation_mode: payload.isolation_mode as string | undefined,
@@ -429,6 +470,11 @@ function toAgentEvent(payload: Record<string, unknown>): AgentEvent {
     globs: payload.globs as string[] | undefined,
     trigger_file_path: payload.trigger_file_path as string | undefined,
     parent_file_path: payload.parent_file_path as string | undefined,
+
+    // Join key to OTel api_request / transcript requestId, when the hook carries one.
+    request_id: payload.request_id as string | undefined,
+    // Captured if a hook ever supplies it; otherwise filled from the transcript in main().
+    ttft_ms: payload.ttft_ms as number | undefined,
 
     extras: extractExtras(payload),
     _raw: payload,
@@ -487,6 +533,24 @@ async function main(): Promise<void> {
     const cost = calculateSessionCost(payload.transcript_path as string);
     if (cost) {
       event.cost_usd = cost.cost_usd;
+      event.reported_cost_usd = cost.reported_cost_usd;
+      event.cost_kind = cost.cost_kind;
+      event.ttft_ms = cost.ttft_ms ?? event.ttft_ms;
+      if (event.duration_ms === undefined) event.duration_ms = cost.duration_ms;
+      event.token_usage = {
+        input_tokens: cost.input_tokens,
+        output_tokens: cost.output_tokens,
+        cache_read_input_tokens: cost.cache_read_input_tokens,
+        cache_creation_input_tokens: cost.cache_creation_input_tokens,
+        cache_creation_5m_input_tokens: cost.cache_creation_5m_input_tokens,
+        cache_creation_1h_input_tokens: cost.cache_creation_1h_input_tokens,
+        reasoning_output_tokens: cost.reasoning_output_tokens,
+        web_search_requests: cost.web_search_requests,
+        service_tier: cost.service_tier,
+        total_tokens: cost.total_tokens,
+        main_total_tokens: cost.main_total_tokens,
+        sidechain_total_tokens: cost.sidechain_total_tokens,
+      };
     }
   }
 

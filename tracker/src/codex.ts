@@ -3,7 +3,7 @@ import { basename, dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { parseCodexRollout } from "./codex-rollout.js";
 import { calculateSessionCost } from "./cost.js";
-import type { AgentEvent, EffectLevel, ToolCategory } from "./types.js";
+import { SCHEMA_VERSION, type AgentEvent, type EffectLevel, type ToolCategory } from "./types.js";
 
 interface CodexThreadRow {
   id: string;
@@ -467,7 +467,7 @@ export function loadCodexEvents(
     if (isRootThread) {
       events.push({
         id: `codex:session-start:${thread.id}`,
-        schema_version: 3,
+        schema_version: SCHEMA_VERSION,
         timestamp: startTimestamp,
         session_id: thread.id,
         transcript_path: rootTranscriptPath,
@@ -492,7 +492,7 @@ export function loadCodexEvents(
     } else {
       events.push({
         id: `codex:subagent-start:${thread.id}`,
-        schema_version: 3,
+        schema_version: SCHEMA_VERSION,
         timestamp: spawnEventByChildId.get(thread.id)?.timestamp ?? startTimestamp,
         session_id: rootThreadId,
         transcript_path: rootTranscriptPath,
@@ -526,7 +526,7 @@ export function loadCodexEvents(
       rollout.prompts.forEach((prompt, index) => {
         events.push({
           id: `codex:prompt:${thread.id}:${index + 1}`,
-          schema_version: 3,
+          schema_version: SCHEMA_VERSION,
           timestamp: prompt.timestamp,
           session_id: thread.id,
           transcript_path: rootTranscriptPath,
@@ -563,7 +563,7 @@ export function loadCodexEvents(
 
         events.push({
           id: `codex:tool:${thread.id}:${call.call_id}`,
-          schema_version: 3,
+          schema_version: SCHEMA_VERSION,
           timestamp: result?.timestamp ?? call.timestamp,
           session_id: rootThreadId,
           transcript_path: rootTranscriptPath,
@@ -611,7 +611,7 @@ export function loadCodexEvents(
       if (isRootThread) {
         events.push({
           id: `codex:session-end:${thread.id}`,
-          schema_version: 3,
+          schema_version: SCHEMA_VERSION,
           timestamp: endTimestamp,
           session_id: thread.id,
           transcript_path: rootTranscriptPath,
@@ -638,7 +638,7 @@ export function loadCodexEvents(
         const closePayload = closeEventByChildId.get(thread.id)?.payload;
         events.push({
           id: `codex:subagent-stop:${thread.id}`,
-          schema_version: 3,
+          schema_version: SCHEMA_VERSION,
           timestamp: endTimestamp,
           session_id: rootThreadId,
           transcript_path: rootTranscriptPath,

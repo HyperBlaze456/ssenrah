@@ -1,5 +1,5 @@
 import { exists, readTextFile } from "@tauri-apps/plugin-fs";
-import type { AgentEvent } from "@/types";
+import type { AgentEvent, CostKind, TokenUsageBreakdown } from "@/types";
 
 export type TelemetrySeverity = "info" | "warning" | "error";
 export type TelemetryPhase = "start" | "success" | "failure" | "end" | "update" | "event";
@@ -41,6 +41,9 @@ export interface AgentSummary {
   last_timestamp: string;
   models_used: string[];
   transcript_paths: string[];
+  /** Best-effort cost/tokens attributed to this actor from its cost-bearing events. */
+  cost_usd?: number;
+  total_tokens?: number;
 }
 
 export interface TaskSummary {
@@ -53,7 +56,7 @@ export interface TaskSummary {
   created_at?: string;
   completed_at?: string;
   duration_seconds?: number;
-  status: "created" | "completed";
+  status: "created" | "completed" | "failed";
 }
 
 export type FlowStatus = "active" | "completed" | "failed";
@@ -160,19 +163,37 @@ export interface SessionCost {
   output_tokens: number;
   cache_read_input_tokens: number;
   cache_creation_input_tokens: number;
+  cache_creation_5m_input_tokens: number;
+  cache_creation_1h_input_tokens: number;
+  reasoning_output_tokens: number;
+  web_search_requests: number;
+  service_tier?: string;
   total_tokens: number;
+  main_total_tokens: number;
+  sidechain_total_tokens: number;
+  ttft_ms?: number;
+  duration_ms?: number;
   cost_usd: number;
+  /** Σ of CLI-injected per-message costUSD, when present. */
+  reported_cost_usd?: number;
+  cost_kind: CostKind;
 }
 
 interface TranscriptEntry {
   type: string;
   sessionId?: string;
   timestamp?: string;
+  // CLI-injected per-message fields live at the entry level, not inside `message`.
+  costUSD?: number;
+  durationMs?: number;
+  ttftMs?: number;
+  requestId?: string;
+  isSidechain?: boolean;
   message?: {
     id?: string;
     model?: string;
     role?: string;
-    usage?: Record<string, number>;
+    usage?: Record<string, unknown>;
     content?:
       | string
       | Array<{
@@ -192,13 +213,18 @@ interface ModelPricing {
   input: number;
   output: number;
   cache_read: number;
+  /** 5-minute cache-creation write rate. */
   cache_creation: number;
+  /** 1-hour cache-creation write rate; defaults to `cache_creation` when omitted. */
+  cache_creation_1h?: number;
+  /** USD per server-side web-search request. */
+  web_search?: number;
 }
 
 const MODEL_PRICING: Record<string, ModelPricing> = {
-  "claude-opus-4-6": { input: 15, output: 75, cache_read: 1.5, cache_creation: 18.75 },
-  "claude-sonnet-4-6": { input: 3, output: 15, cache_read: 0.3, cache_creation: 3.75 },
-  "claude-haiku-4-5": { input: 0.8, output: 4, cache_read: 0.08, cache_creation: 1 },
+  "claude-opus-4-6": { input: 15, output: 75, cache_read: 1.5, cache_creation: 18.75, cache_creation_1h: 30, web_search: 0.01 },
+  "claude-sonnet-4-6": { input: 3, output: 15, cache_read: 0.3, cache_creation: 3.75, cache_creation_1h: 6, web_search: 0.01 },
+  "claude-haiku-4-5": { input: 0.8, output: 4, cache_read: 0.08, cache_creation: 1, cache_creation_1h: 1.6, web_search: 0.01 },
 };
 
 const FALLBACK_PRICING = MODEL_PRICING["claude-sonnet-4-6"];
@@ -718,6 +744,25 @@ export function summarizeAgents(
     }
   }
 
+  // Best-effort cost/token attribution: cost is recomputed per session on the actor's
+  // terminal event (Stop/SessionEnd), so attribute it to that actor's lane. Finer
+  // per-subagent attribution needs agent_transcript_path parsing (deferred to L3).
+  const sessionQuery = options.session;
+  const filteredEvents = sessionQuery
+    ? events.filter((event) => event.session_id.startsWith(sessionQuery))
+    : events;
+  for (const event of filteredEvents) {
+    if (typeof event.cost_usd !== "number" && !event.token_usage) continue;
+    const summary = grouped.get(`${event.session_id}::${getActor(event).actor_id}`);
+    if (!summary) continue;
+    if (typeof event.cost_usd === "number") {
+      summary.cost_usd = Math.max(summary.cost_usd ?? 0, event.cost_usd);
+    }
+    if (event.token_usage) {
+      summary.total_tokens = Math.max(summary.total_tokens ?? 0, event.token_usage.total_tokens);
+    }
+  }
+
   return [...grouped.values()].sort((left, right) => right.last_timestamp.localeCompare(left.last_timestamp));
 }
 
@@ -729,6 +774,15 @@ export function summarizeTasks(
   const filtered = sessionQuery
     ? events.filter((event) => event.session_id.startsWith(sessionQuery))
     : events;
+
+  // A completed task is "failed" when its completion_status or derived outcome says so.
+  const completionStatus = (event: AgentEvent): "completed" | "failed" => {
+    const status = String(event.completion_status ?? "").toLowerCase();
+    if (status.includes("fail") || status.includes("error") || event.outcome === "failed") {
+      return "failed";
+    }
+    return "completed";
+  };
 
   const tasks = new Map<string, TaskSummary>();
   for (const event of filtered) {
@@ -747,7 +801,7 @@ export function summarizeTasks(
         team_name: event.team_name,
         created_at: event.hook_event_type === "TaskCreated" ? event.timestamp : undefined,
         completed_at: event.hook_event_type === "TaskCompleted" ? event.timestamp : undefined,
-        status: event.hook_event_type === "TaskCompleted" ? "completed" : "created",
+        status: event.hook_event_type === "TaskCompleted" ? completionStatus(event) : "created",
       });
       continue;
     }
@@ -761,7 +815,7 @@ export function summarizeTasks(
     }
     if (event.hook_event_type === "TaskCompleted") {
       existing.completed_at = event.timestamp;
-      existing.status = "completed";
+      existing.status = completionStatus(event);
     }
   }
 
@@ -1209,6 +1263,39 @@ function getPricing(model: string): ModelPricing {
   return FALLBACK_PRICING!;
 }
 
+function num(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/** Token usage accumulator mirroring the tracker's `TokenUsage`. */
+interface CostTotals {
+  input_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_creation_5m_input_tokens: number;
+  cache_creation_1h_input_tokens: number;
+  cache_read_input_tokens: number;
+  output_tokens: number;
+  reasoning_output_tokens: number;
+  web_search_requests: number;
+}
+
+/** Calculate cost in USD from token counts and pricing (mirrors tracker `calculateCost`). */
+function calculateCost(usage: CostTotals, pricing: ModelPricing): number {
+  const cacheCreation1hRate = pricing.cache_creation_1h ?? pricing.cache_creation;
+  const inputCost = (usage.input_tokens / 1_000_000) * pricing.input;
+  const outputCost = (usage.output_tokens / 1_000_000) * pricing.output;
+  const cacheReadCost = (usage.cache_read_input_tokens / 1_000_000) * pricing.cache_read;
+  // Any cache-creation tokens not attributed to the 1h tier are priced at the 5m rate
+  // (covers flat `cache_creation_input_tokens` transcripts with no nested TTL split).
+  const cacheCreation5m =
+    usage.cache_creation_input_tokens - usage.cache_creation_1h_input_tokens;
+  const cacheCreationCost =
+    (cacheCreation5m / 1_000_000) * pricing.cache_creation +
+    (usage.cache_creation_1h_input_tokens / 1_000_000) * cacheCreation1hRate;
+  const webSearchCost = usage.web_search_requests * (pricing.web_search ?? 0);
+  return inputCost + outputCost + cacheReadCost + cacheCreationCost + webSearchCost;
+}
+
 export async function readSessionCost(
   transcriptPath: string,
   sessionId: string,
@@ -1221,13 +1308,25 @@ export async function readSessionCost(
     const entries = parseTranscriptEntries(content);
 
     let model = "unknown";
-    const totals = {
+    const totals: CostTotals = {
       input_tokens: 0,
-      output_tokens: 0,
-      cache_read_input_tokens: 0,
       cache_creation_input_tokens: 0,
+      cache_creation_5m_input_tokens: 0,
+      cache_creation_1h_input_tokens: 0,
+      cache_read_input_tokens: 0,
+      output_tokens: 0,
+      reasoning_output_tokens: 0,
+      web_search_requests: 0,
     };
     let hasUsage = false;
+    let mainTotalTokens = 0;
+    let sidechainTotalTokens = 0;
+    let reportedCost = 0;
+    let hasReported = false;
+    let totalDurationMs = 0;
+    let hasDuration = false;
+    let ttftMs: number | undefined;
+    let serviceTier: string | undefined;
 
     for (const entry of entries) {
       if (entry.type !== "assistant") continue;
@@ -1238,37 +1337,86 @@ export async function readSessionCost(
         model = message.model;
       }
 
-      const usage = message.usage as Record<string, number> | undefined;
+      const isSidechain = entry.isSidechain === true;
+
+      // CLI-injected per-message fields live at the entry level, not inside `message`.
+      if (typeof entry.costUSD === "number") {
+        reportedCost += entry.costUSD;
+        hasReported = true;
+      }
+      if (typeof entry.durationMs === "number") {
+        totalDurationMs += entry.durationMs;
+        hasDuration = true;
+      }
+      if (ttftMs === undefined && !isSidechain && typeof entry.ttftMs === "number") {
+        ttftMs = entry.ttftMs;
+      }
+
+      const usage = message.usage;
       if (!usage) continue;
 
       hasUsage = true;
-      totals.input_tokens += usage.input_tokens ?? 0;
-      totals.output_tokens += usage.output_tokens ?? 0;
-      totals.cache_read_input_tokens += usage.cache_read_input_tokens ?? 0;
-      totals.cache_creation_input_tokens += usage.cache_creation_input_tokens ?? 0;
+      const input = num(usage.input_tokens);
+      const output = num(usage.output_tokens);
+      const cacheRead = num(usage.cache_read_input_tokens);
+
+      // `cache_creation` may be a nested TTL split object or a flat number on older transcripts.
+      let create5m = 0;
+      let create1h = 0;
+      const cacheCreation = usage.cache_creation;
+      if (cacheCreation && typeof cacheCreation === "object") {
+        const split = cacheCreation as Record<string, unknown>;
+        create5m = num(split.ephemeral_5m_input_tokens);
+        create1h = num(split.ephemeral_1h_input_tokens);
+      } else {
+        create5m = num(usage.cache_creation_input_tokens);
+      }
+      const createTotal = create5m + create1h;
+
+      const serverToolUse = usage.server_tool_use;
+      const webSearch =
+        serverToolUse && typeof serverToolUse === "object"
+          ? num((serverToolUse as Record<string, unknown>).web_search_requests)
+          : 0;
+
+      if (typeof usage.service_tier === "string") serviceTier = usage.service_tier;
+
+      totals.input_tokens += input;
+      totals.output_tokens += output;
+      totals.cache_read_input_tokens += cacheRead;
+      totals.cache_creation_5m_input_tokens += create5m;
+      totals.cache_creation_1h_input_tokens += create1h;
+      totals.cache_creation_input_tokens += createTotal;
+      totals.web_search_requests += webSearch;
+
+      const messageTotal = input + output + createTotal + cacheRead;
+      if (isSidechain) sidechainTotalTokens += messageTotal;
+      else mainTotalTokens += messageTotal;
     }
 
     if (!hasUsage) return null;
 
     const pricing = getPricing(model);
-    const costUsd =
-      (totals.input_tokens / 1_000_000) * pricing.input +
-      (totals.output_tokens / 1_000_000) * pricing.output +
-      (totals.cache_read_input_tokens / 1_000_000) * pricing.cache_read +
-      (totals.cache_creation_input_tokens / 1_000_000) * pricing.cache_creation;
-
+    const costUsd = calculateCost(totals, pricing);
     const totalTokens =
       totals.input_tokens +
       totals.output_tokens +
-      totals.cache_read_input_tokens +
-      totals.cache_creation_input_tokens;
+      totals.cache_creation_input_tokens +
+      totals.cache_read_input_tokens;
 
     return {
       session_id: sessionId,
       model,
       ...totals,
+      service_tier: serviceTier,
       total_tokens: totalTokens,
+      main_total_tokens: mainTotalTokens,
+      sidechain_total_tokens: sidechainTotalTokens,
+      ttft_ms: ttftMs,
+      duration_ms: hasDuration ? totalDurationMs : undefined,
       cost_usd: Math.round(costUsd * 10000) / 10000,
+      reported_cost_usd: hasReported ? Math.round(reportedCost * 10000) / 10000 : undefined,
+      cost_kind: "recomputed",
     };
   } catch {
     return null;
@@ -1339,6 +1487,9 @@ export interface RunTraceLane {
   start_timestamp: string;
   end_timestamp: string;
   duration_ms: number;
+  /** Best-effort cost/tokens for this lane's actor, from its cost-bearing events. */
+  cost_usd?: number;
+  total_tokens?: number;
   nodes: RunTraceNode[];
 }
 
@@ -1566,25 +1717,69 @@ function getTopTools(events: AgentEvent[]): [string, number][] {
   return [...counts.entries()].sort((left, right) => right[1] - left[1]).slice(0, 6);
 }
 
-export function getAuthoritativeSessionCost(events: AgentEvent[], sessionId?: string): number {
+export interface SessionCostSummary {
+  session_id: string;
+  cost_usd: number;
+  cost_kind?: CostKind;
+  reported_cost_usd?: number;
+  ttft_ms?: number;
+  token_usage?: TokenUsageBreakdown;
+  source_event_id?: string;
+  source_timestamp?: string;
+}
+
+/**
+ * Latest authoritative cost snapshot for a session — take-last over terminal cost
+ * events (Stop / SessionEnd), never summed. Carries the token breakdown so callers
+ * can surface tokens/latency without re-parsing the transcript.
+ */
+export function getAuthoritativeSessionCostSummary(
+  events: AgentEvent[],
+  sessionId?: string,
+): SessionCostSummary {
+  const resolvedSessionId = sessionId ?? "";
   const relevant = sessionId
     ? events.filter((event) => event.session_id === sessionId)
     : events;
 
-  if (relevant.length === 0) return 0;
-
   const costEvents = relevant.filter((event) => typeof event.cost_usd === "number");
-  if (costEvents.length === 0) return 0;
+  if (costEvents.length === 0) return { session_id: resolvedSessionId, cost_usd: 0 };
 
   const terminal = costEvents.filter((event) => TERMINAL_COST_EVENTS.has(event.hook_event_type));
   const source = terminal.length > 0 ? terminal : costEvents;
   const sorted = [...source].sort((left, right) => left.timestamp.localeCompare(right.timestamp));
-  return sorted[sorted.length - 1]?.cost_usd ?? 0;
+  const latest = sorted[sorted.length - 1]!;
+
+  return {
+    session_id: latest.session_id,
+    cost_usd: latest.cost_usd ?? 0,
+    cost_kind: latest.cost_kind,
+    reported_cost_usd: latest.reported_cost_usd,
+    ttft_ms: latest.ttft_ms,
+    token_usage: latest.token_usage,
+    source_event_id: latest.id,
+    source_timestamp: latest.timestamp,
+  };
+}
+
+export function getAuthoritativeSessionCost(events: AgentEvent[], sessionId?: string): number {
+  return getAuthoritativeSessionCostSummary(events, sessionId).cost_usd;
 }
 
 export function getAuthoritativeTotalCost(events: AgentEvent[]): number {
   const sessionIds = [...new Set(events.map((event) => event.session_id))];
   return sessionIds.reduce((sum, sessionId) => sum + getAuthoritativeSessionCost(events, sessionId), 0);
+}
+
+/** Best-effort cost/tokens for a lane, from its actor's cost-bearing events. */
+function laneCostTokens(events: AgentEvent[]): { cost_usd?: number; total_tokens?: number } {
+  let cost: number | undefined;
+  let tokens: number | undefined;
+  for (const event of events) {
+    if (typeof event.cost_usd === "number") cost = Math.max(cost ?? 0, event.cost_usd);
+    if (event.token_usage) tokens = Math.max(tokens ?? 0, event.token_usage.total_tokens);
+  }
+  return { cost_usd: cost, total_tokens: tokens };
 }
 
 function shouldExpandActorBranch(
@@ -1885,6 +2080,7 @@ export function deriveRunTraceModel(
       start_timestamp: bounds.start,
       end_timestamp: bounds.end,
       duration_ms: getEventDurationMs(actor.events),
+      ...laneCostTokens(actor.events),
       nodes,
     });
   }
@@ -1904,6 +2100,7 @@ export function deriveRunTraceModel(
     start_timestamp: mainBounds.start,
     end_timestamp: mainBounds.end,
     duration_ms: getEventDurationMs(mainActor.events),
+    ...laneCostTokens(mainActor.events),
     nodes: mainLaneNodes,
   };
 
