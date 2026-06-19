@@ -119,7 +119,7 @@ export const SettingsSchema = z.object({
   model: z.string().optional(),
   availableModels: z.array(z.string()).optional(),
   modelOverrides: z.record(z.string(), z.string()).optional(),
-  effortLevel: z.enum(["low", "medium", "high"]).optional(),
+  effortLevel: z.enum(["low", "medium", "high", "xhigh"]).optional(),
   outputStyle: z.string().optional(),
   language: z.string().optional(),
   statusLine: StatusLineSchema,

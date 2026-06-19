@@ -73,7 +73,8 @@ export interface ConflictInfo {
 export type HookEvent =
   | "PreToolUse" | "PostToolUse" | "PostToolUseFailure" | "PostToolBatch"
   | "PermissionRequest" | "PermissionDenied"
-  | "UserPromptSubmit" | "UserPromptExpansion" | "Notification"
+  | "UserPromptSubmit" | "UserPromptExpansion"
+  | "Notification"
   | "Stop" | "StopFailure" | "SubagentStart" | "SubagentStop"
   | "SessionStart" | "SessionEnd" | "TeammateIdle"
   | "TaskCreated" | "TaskCompleted" | "PreCompact" | "PostCompact"
@@ -153,7 +154,7 @@ export interface Settings {
   model?: string;
   availableModels?: string[];
   modelOverrides?: Record<string, string>;
-  effortLevel?: "low" | "medium" | "high";
+  effortLevel?: "low" | "medium" | "high" | "xhigh";
   outputStyle?: string;
   language?: string;
   statusLine?: { type: "command"; command: string } | { type: "http"; url: string; interval?: number };
@@ -348,6 +349,37 @@ export interface EventSummary {
   last_event: string | null;
   top_tools: [string, number][];
 }
+
+// Plugin registry types (mirror of ~/.claude/plugins/installed_plugins.json)
+export interface InstalledPluginEntry {
+  scope: string;
+  installPath: string;
+  version?: string;
+  installedAt?: string;
+  lastUpdated?: string;
+  gitCommitSha?: string;
+  [key: string]: unknown;
+}
+
+export interface InstalledPluginsFile {
+  version?: number;
+  plugins?: Record<string, InstalledPluginEntry[]>;
+  [key: string]: unknown;
+}
+
+// Marketplace registry types (mirror of ~/.claude/plugins/known_marketplaces.json)
+export interface KnownMarketplaceEntry {
+  source?: {
+    source?: string;
+    repo?: string;
+    [key: string]: unknown;
+  };
+  installLocation?: string;
+  lastUpdated?: string;
+  [key: string]: unknown;
+}
+
+export type KnownMarketplaces = Record<string, KnownMarketplaceEntry>;
 
 // Panel metadata
 export interface PanelMeta {

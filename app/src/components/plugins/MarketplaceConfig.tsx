@@ -1,40 +1,54 @@
-import { useState } from "react";
+import { useEffect } from "react";
 import { useSettingsStore } from "@/lib/store/settings";
+import { usePluginsStore } from "@/lib/store/plugins";
 import { useUiStore } from "@/lib/store/ui";
-import { Input } from "@/components/ui/input";
+import { ErrorBanner } from "@/components/shared/ErrorBanner";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Plus, X } from "lucide-react";
 import type { WritableScope } from "@/types";
 
+const WRITABLE_SCOPES: WritableScope[] = ["user", "project", "local"];
+
 export function MarketplaceConfig() {
   const scope = useUiStore((s) => s.activeScope);
   const settings = useSettingsStore((s) => s.getForScope(scope));
+  const userSettings = useSettingsStore((s) => s.user);
+  const projectSettings = useSettingsStore((s) => s.project);
+  const localSettings = useSettingsStore((s) => s.local);
   const update = useSettingsStore((s) => s.update);
+
+  const marketplaces = usePluginsStore((s) => s.marketplaces);
+  const marketplacesStatus = usePluginsStore((s) => s.marketplacesStatus);
+  const loadMarketplaces = usePluginsStore((s) => s.loadMarketplaces);
+  const removeMarketplace = usePluginsStore((s) => s.removeMarketplace);
+
   const readOnly = scope === "managed";
   const writableScope = scope as WritableScope;
 
-  const extraKnown = settings?.extraKnownMarketplaces ?? {};
-  const strictKnown = settings?.strictKnownMarketplaces ?? [];
-  const blocked = settings?.blockedMarketplaces ?? [];
+  useEffect(() => {
+    loadMarketplaces();
+  }, [loadMarketplaces]);
 
-  const [newExtraKey, setNewExtraKey] = useState("");
+  const strictKnown = (settings?.strictKnownMarketplaces ?? []) as object[];
+  const blocked = (settings?.blockedMarketplaces ?? []) as object[];
 
-  const handleAddExtra = () => {
-    const key = newExtraKey.trim();
-    if (!key) return;
-    update(writableScope, "extraKnownMarketplaces", {
-      ...extraKnown,
-      [key]: {},
-    });
-    setNewExtraKey("");
-  };
-
-  const handleRemoveExtra = (key: string) => {
-    const next = { ...extraKnown };
-    delete next[key];
-    update(writableScope, "extraKnownMarketplaces", next);
+  const handleRemoveMarketplace = async (name: string) => {
+    await removeMarketplace(name);
+    const scopeSettings: Record<WritableScope, typeof userSettings> = {
+      user: userSettings,
+      project: projectSettings,
+      local: localSettings,
+    };
+    for (const s of WRITABLE_SCOPES) {
+      const current = (scopeSettings[s]?.extraKnownMarketplaces ?? {}) as Record<string, unknown>;
+      if (name in current) {
+        const next = { ...current };
+        delete next[name];
+        update(s, "extraKnownMarketplaces", next);
+      }
+    }
   };
 
   const handleAddStrict = () => {
@@ -45,7 +59,7 @@ export function MarketplaceConfig() {
     update(
       writableScope,
       "strictKnownMarketplaces",
-      strictKnown.filter((_: object, i: number) => i !== index),
+      strictKnown.filter((_, i) => i !== index),
     );
   };
 
@@ -57,68 +71,68 @@ export function MarketplaceConfig() {
     update(
       writableScope,
       "blockedMarketplaces",
-      blocked.filter((_: object, i: number) => i !== index),
+      blocked.filter((_, i) => i !== index),
     );
   };
 
   return (
     <div className="space-y-6">
-      {/* Extra Known Marketplaces */}
+      {/* Known Marketplaces — sourced from ~/.claude/plugins/known_marketplaces.json */}
       <Card>
         <CardHeader className="py-3 px-4">
-          <CardTitle className="text-sm">Extra Known Marketplaces</CardTitle>
+          <CardTitle className="text-sm">Known Marketplaces</CardTitle>
         </CardHeader>
         <CardContent className="px-4 pb-3 pt-0 space-y-2">
           <p className="text-xs text-muted-foreground">
-            Additional marketplace registries to recognize.
+            Marketplaces registered with Claude Code. Remove to fully unregister.
           </p>
-          {Object.keys(extraKnown).map((key) => (
-            <div
-              key={key}
-              className="flex items-center gap-2 rounded border border-border bg-muted/30 px-2 py-1.5"
-            >
-              <span className="flex-1 text-sm font-mono">{key}</span>
-              {!readOnly && (
-                <button
-                  onClick={() => handleRemoveExtra(key)}
-                  className="text-muted-foreground hover:text-destructive"
+
+          {marketplacesStatus.state === "error" && (
+            <ErrorBanner
+              error={marketplacesStatus.error}
+              onRetry={() => loadMarketplaces()}
+            />
+          )}
+
+          {marketplaces && Object.keys(marketplaces).length === 0 && (
+            <p className="text-xs text-muted-foreground">No marketplaces registered.</p>
+          )}
+
+          {marketplaces &&
+            Object.entries(marketplaces).map(([name, entry]) => {
+              const repo = entry?.source?.repo;
+              const sourceKind = entry?.source?.source;
+              return (
+                <div
+                  key={name}
+                  className="flex items-center gap-2 rounded border border-border bg-muted/30 px-2 py-1.5"
                 >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              )}
-            </div>
-          ))}
-          {!readOnly && (
-            <div className="flex gap-2">
-              <Input
-                value={newExtraKey}
-                onChange={(e) => setNewExtraKey(e.target.value)}
-                placeholder="Marketplace name..."
-                className="flex-1 font-mono text-sm"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleAddExtra();
-                }}
-              />
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleAddExtra}
-                disabled={!newExtraKey.trim()}
-              >
-                <Plus className="mr-1 h-3.5 w-3.5" />
-                Add
-              </Button>
-            </div>
-          )}
-          {Object.keys(extraKnown).length === 0 && (
-            <p className="text-xs text-muted-foreground">No extra marketplaces configured.</p>
-          )}
+                  <div className="flex flex-1 flex-col">
+                    <span className="text-sm font-mono">{name}</span>
+                    {(repo || sourceKind) && (
+                      <span className="text-xs text-muted-foreground">
+                        {[sourceKind, repo].filter(Boolean).join(" · ")}
+                      </span>
+                    )}
+                  </div>
+                  {!readOnly && (
+                    <button
+                      onClick={() => handleRemoveMarketplace(name)}
+                      className="text-muted-foreground hover:text-destructive"
+                      aria-label={`Remove ${name}`}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
         </CardContent>
       </Card>
 
       <Separator />
 
-      {/* Strict Known Marketplaces */}
+      {/* Strict Known Marketplaces — settings.json policy field */}
       <Card>
         <CardHeader className="py-3 px-4">
           <div className="flex items-center justify-between">
@@ -135,7 +149,7 @@ export function MarketplaceConfig() {
           <p className="text-xs text-muted-foreground">
             Marketplace definitions enforced by policy.
           </p>
-          {strictKnown.map((_entry: object, index: number) => (
+          {strictKnown.map((_entry, index) => (
             <div
               key={index}
               className="flex items-center gap-2 rounded border border-border bg-muted/30 px-2 py-1.5"
@@ -159,7 +173,7 @@ export function MarketplaceConfig() {
 
       <Separator />
 
-      {/* Blocked Marketplaces */}
+      {/* Blocked Marketplaces — settings.json policy field */}
       <Card>
         <CardHeader className="py-3 px-4">
           <div className="flex items-center justify-between">
@@ -176,7 +190,7 @@ export function MarketplaceConfig() {
           <p className="text-xs text-muted-foreground">
             Marketplace registries blocked by policy.
           </p>
-          {blocked.map((_entry: object, index: number) => (
+          {blocked.map((_entry, index) => (
             <div
               key={index}
               className="flex items-center gap-2 rounded border border-border bg-muted/30 px-2 py-1.5"

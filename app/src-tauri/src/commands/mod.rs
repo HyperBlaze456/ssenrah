@@ -4,6 +4,7 @@ pub mod managed;
 pub mod mcp;
 pub mod memory;
 pub mod platform;
+pub mod plugins;
 pub mod project;
 pub mod settings;
 pub mod skills;

@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 export const HookEventSchema = z.enum([
-  "PreToolUse", "PostToolUse", "PostToolUseFailure",
-  "PermissionRequest", "UserPromptSubmit", "Notification",
+  "PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch",
+  "PermissionRequest", "PermissionDenied",
+  "UserPromptSubmit", "UserPromptExpansion", "Notification",
   "Stop", "StopFailure", "SubagentStart", "SubagentStop",
   "SessionStart", "SessionEnd", "TeammateIdle",
   "TaskCreated", "TaskCompleted", "PreCompact", "PostCompact",

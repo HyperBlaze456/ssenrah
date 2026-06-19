@@ -114,21 +114,15 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     const settings = state[scope];
     if (!settings) return;
 
-    // Validate with Zod before saving
+    // Validate as a best-effort warning, but never block the write —
+    // the on-disk file is the source of truth and may contain fields
+    // (legacy hook events, new enum values) the schema hasn't caught up to.
     const result = SettingsSchema.safeParse(settings);
     if (!result.success) {
-      const errors = result.error.issues.map((issue) => ({
-        path: issue.path.join("."),
-        message: issue.message,
-        code: issue.code,
-      }));
-      set((s) => ({
-        status: {
-          ...s.status,
-          [scope]: { state: "error", error: { kind: "validation_error" as const, errors } },
-        },
-      }));
-      return;
+      const issues = result.error.issues
+        .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
+        .join("; ");
+      console.warn(`[settings:${scope}] schema validation issues (saving anyway): ${issues}`);
     }
 
     try {
